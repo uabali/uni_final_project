@@ -12,11 +12,20 @@ env/
 venv/
 ENV/
 
+# uv
+uv.lock
+
+# Project specific
 # Project specific
 chroma_db/
+qdrant_db/       # Qdrant Vector DB (Large files)
 .env
-data/*.pdf
+data/            # Exclude all data files
 !data/.gitkeep
+
+# Streamlit
+.streamlit/
+
 
 # IDEs
 .vscode/
