@@ -22,11 +22,11 @@ except ImportError:
     print("Uyarı: SemanticChunker bulunamadı. 'langchain-experimental' paketini yükleyin.")
 
 def split_documents(
-    documents, 
-    chunk_size=800, 
-    chunk_overlap=120,
-    method="recursive",
-    embeddings=None
+    documents,
+    chunk_size: int = 600,
+    chunk_overlap: int = 100,
+    method: str = "recursive",
+    embeddings=None,
 ):
     """
     Dokümanları küçük parçalara böler.
@@ -82,7 +82,7 @@ def split_documents(
     if method == "recursive":
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
+            chunk_overlap=chunk_overlap,
         )
         print(f"Recursive Splitter kullanılıyor (chunk_size={chunk_size}, overlap={chunk_overlap})...")
     

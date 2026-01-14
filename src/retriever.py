@@ -75,12 +75,20 @@ def auto_select_strategy(question: str) -> str:
     """
     q = question.lower()
 
+    # Sayısal / kesin sorular
     if any(x in q for x in ["kac", "sure", "ne zaman", "dakika"]):
         return "hybrid"     # Sayısal / Kesin bilgi
-    elif any(x in q for x in ["neden", "nasil"]):
+
+    # Açıklayıcı sorular
+    if any(x in q for x in ["neden", "nasil"]):
         return "mmr"        # Açıklayıcı / Çeşitlilik
-    else:
-        return "similarity" # Hızlı varsayılan
+
+    # Kullanim alanlari / nerelerde kullanilir gibi genis kapsamli sorular icin
+    # zayif eslesmeleri elemek uzere threshold kullan
+    if any(x in q for x in ["kullanim alanlari", "hangi projelerde", "nerelerde kullanilir", "nerede kullanilir"]):
+        return "threshold"  # Skor esigine gore filtreleme
+
+    return "similarity"     # Hızlı varsayılan
 
 
 # ============================================================

@@ -7,6 +7,8 @@ Incremental Indexing (Ekle/Sil) desteği sunar.
 """
 
 import os
+import json
+import time
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
@@ -33,7 +35,7 @@ def create_embeddings(model_name="BAAI/bge-m3", device="cuda"):
     )
 
 
-def create_vectorstore(docs, embeddings, path="qdrant_db", collection_name="rag_collection"):
+def create_vectorstore(docs, embeddings, url="http://localhost:6333", collection_name="rag_collection"):
     """
     Qdrant vektör veritabanını oluşturur veya yükler.
     
@@ -44,13 +46,39 @@ def create_vectorstore(docs, embeddings, path="qdrant_db", collection_name="rag_
     Args:
         docs (list): İndekslenecek doküman parçaları (chunklar).
         embeddings: Embedding fonksiyonu (create_embeddings çıktısı).
-        path (str): Qdrant'ın yerel dosya yolu 'qdrant_db'.
+        url (str): Qdrant sunucu URL'si (ornegin "http://localhost:6333").
         collection_name (str): Veritabanındaki tablo adı.
         
     Returns:
         QdrantVectorStore: Arama yapılabilir vektör deposu.
     """
-    client = QdrantClient(path=path)
+
+    # region agent log
+    try:
+        with open("/home/uabali/MyCode/GitHub/RAG/.cursor/debug.log", "a") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "pre-fix",
+                        "hypothesisId": "H1",
+                        "location": "src/vectorstore.py:create_vectorstore:entry",
+                        "message": "create_vectorstore called",
+                        "data": {
+                            "has_docs": bool(docs),
+                            "collection_name": collection_name,
+                            "url": url,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # endregion
+
+    client = QdrantClient(url=url)
     
     # Mevcut koleksiyonları kontrol et
     try:
@@ -58,8 +86,58 @@ def create_vectorstore(docs, embeddings, path="qdrant_db", collection_name="rag_
     except Exception:
         collections = []
 
+    # region agent log
+    try:
+        with open("/home/uabali/MyCode/GitHub/RAG/.cursor/debug.log", "a") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "pre-fix",
+                        "hypothesisId": "H2",
+                        "location": "src/vectorstore.py:create_vectorstore:collections",
+                        "message": "Collections fetched from server",
+                        "data": {
+                            "collections": collections,
+                            "collection_name": collection_name,
+                            "url": url,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # endregion
+
     if collection_name in collections:
         print(f"Mevcut Qdrant veritabani yukleniyor: {collection_name}")
+
+        # region agent log
+        try:
+            with open("/home/uabali/MyCode/GitHub/RAG/.cursor/debug.log", "a") as _f:
+                _f.write(
+                    json.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "pre-fix",
+                            "hypothesisId": "H3",
+                            "location": "src/vectorstore.py:create_vectorstore:existing",
+                            "message": "Using existing collection",
+                            "data": {
+                                "collection_name": collection_name,
+                                "url": url,
+                            },
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # endregion
+
         return QdrantVectorStore(
             client=client,
             collection_name=collection_name,
@@ -69,14 +147,65 @@ def create_vectorstore(docs, embeddings, path="qdrant_db", collection_name="rag_
     # Yeni oluştur
     if docs:
         print(f"Yeni Qdrant veritabani olusturuluyor: {collection_name}")
+
+        # region agent log
+        try:
+            with open("/home/uabali/MyCode/GitHub/RAG/.cursor/debug.log", "a") as _f:
+                _f.write(
+                    json.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "pre-fix",
+                            "hypothesisId": "H4",
+                            "location": "src/vectorstore.py:create_vectorstore:new",
+                            "message": "Creating new collection from documents",
+                            "data": {
+                                "collection_name": collection_name,
+                                "url": url,
+                                "num_docs": len(docs),
+                            },
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # endregion
+
         return QdrantVectorStore.from_documents(
             documents=docs,
             embedding=embeddings,
-            path=path,
+            url=url,
             collection_name=collection_name
         )
 
     print("Uyari: Collection yok ve dokuman verilmedi. Bos donecek.")
+
+    # region agent log
+    try:
+        with open("/home/uabali/MyCode/GitHub/RAG/.cursor/debug.log", "a") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "pre-fix",
+                        "hypothesisId": "H5",
+                        "location": "src/vectorstore.py:create_vectorstore:empty",
+                        "message": "No docs and no existing collection; returning empty store",
+                        "data": {
+                            "collection_name": collection_name,
+                            "url": url,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # endregion
+
     return QdrantVectorStore(
         client=client,
         collection_name=collection_name,

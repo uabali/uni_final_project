@@ -25,7 +25,7 @@ data/            # Exclude all data files
 
 # Streamlit
 .streamlit/
-
+.gitignore
 
 # IDEs
 .vscode/
@@ -33,3 +33,33 @@ data/            # Exclude all data files
 
 # OS
 .DS_Store
+
+# Docker
+docker-compose.yml
+docker-compose.override.yml
+qdrant_storage/
+qdrant_storage.tar.gz
+qdrant_storage
+qdrant_storage.tar.gz
+
+__pycache__
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.vscode/
+.idea/
+.DS_Store
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+uv.lock
+uv.lock.json
+uv.lock.json.lock
+uv.lock.json.lock.json
+uv.lock.json.lock.json.lock
+uv.lock.json.lock.json.lock.json
+uv.lock.json.lock.json.lock.json.lock
+uv.lock.json.lock.json.lock.json.lock.json

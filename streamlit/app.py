@@ -162,9 +162,16 @@ with st.sidebar:
                 
                 # Semantic veya Recursive splitter kullan
                 if use_semantic:
+                    # Semantic splitter kendi icinde dinamik boyut kullanir
                     chunks = split_documents(docs, method="semantic", embeddings=embeddings)
                 else:
-                    chunks = split_documents(docs, method="recursive")
+                    # Ders notlari icin daha kucuk recursive chunk'lar
+                    chunks = split_documents(
+                        docs,
+                        method="recursive",
+                        chunk_size=600,
+                        chunk_overlap=100,
+                    )
                 
                 # 3. Add to Qdrant (Incremental)
                 add_documents_to_collection(vectorstore, chunks)
@@ -227,11 +234,32 @@ def get_response(question, use_multi_query=False, num_queries=3, use_rerank=Fals
     prompt = PromptTemplate(
         input_variables=["context", "question"],
         template="""
-Sen yardımcı bir asistansın.
+Sen retrieval tabanli bir asistansin.
+
+Görevin:
+- Soruyu SADECE verilen bağlama dayanarak cevapla.
+- Harici bilgi kullanma, varsayım yapma.
+- Eğer cevap bağlamda net olarak yoksa, tam olarak şunu yaz:
+  "Baglamda cevap bulunamadi."
+
+Cevap dili ve terim politikası:
+- Normal cümleleri TÜRKÇE olarak yaz.
+- Kısaltmaları (STT, HTTP, API, OAuth, JWT, JSON, TCP/IP vb.) ve kod/komut/teknik terimleri
+  (function adları, class isimleri, değişken isimleri, API endpointleri, CLI komutları, dosya adları)
+  soruda veya bağlamda geçtiği ŞEKLİYLE KORU.
+- Bu kısaltmaları ve teknik terimleri TÜRKÇE'ye çevirmeye veya değiştirmeye çalışma;
+  sadece gerekirse yanına parantez içinde kısaca ne olduğunu açıklayabilirsin.
+
+Cevap stili:
+- Önce 1–2 cümlede KISA ve NET bir direkt cevap ver.
+- Daha sonra GEREKLIYSE önemli noktaları birkaç maddede kısaca açıkla.
+- Soru çok parçalıysa, her parçaya açıkça cevap ver (kısa ama açıklayıcı).
+- Aynı cümleyi veya fikri birden fazla kez tekrar etme; bir bilgiyi bir kez net ve kısa şekilde söylemen yeterli.
+
 Soru: {question}
 Bağlam: {context}
 
-Cevap (Türkçe, kısa ve öz):
+Cevap:
 """
     )
     
