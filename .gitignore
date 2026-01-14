@@ -14,19 +14,17 @@ ENV/
 
 # uv
 uv.lock
-
-# Project specific
-# Project specific
 chroma_db/
 qdrant_db/       # Qdrant Vector DB (Large files)
 .env
 data/            # Exclude all data files
 !data/.gitkeep
-
-# Streamlit
 .streamlit/
 .gitignore
-
+.cursor/
+.cursor/
+.cursor/
+data/
 # IDEs
 .vscode/
 .idea/
@@ -63,3 +61,4 @@ uv.lock.json.lock.json.lock
 uv.lock.json.lock.json.lock.json
 uv.lock.json.lock.json.lock.json.lock
 uv.lock.json.lock.json.lock.json.lock.json
+
