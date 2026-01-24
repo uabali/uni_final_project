@@ -35,7 +35,7 @@ poetry.lock
 Pipfile.lock
 
 # Environment Variables
-.env
+.venv/
 .env.local
 .env.*.local
 
@@ -94,3 +94,52 @@ dmypy.json
 # Logs
 *.log
 logs/
+*.log.*
+
+# Models (large files)
+models/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.onnx
+*.pb
+*.tflite
+*.gguf
+*.ggml
+
+# Personal notes and temporary files
+MYNOTE.txt
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+
+# Benchmark results and outputs
+benchmark_results*.json
+benchmark_results*.jsonl
+*.jsonl
+!data/.gitkeep
+
+# Cache and temporary directories
+.cache/
+tmp/
+temp/
+*.cache
+
+# Large data files
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+*.mp4
+*.avi
+*.mov
+*.wav
+*.mp3
+*.flac
