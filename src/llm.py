@@ -6,6 +6,7 @@ Production seviyesinde performans için 'vLLM' kütüphanesini kullanır.
 """
 
 from langchain_community.llms import VLLM
+from langchain_openai import ChatOpenAI
 
 def create_llm(
     model: str = "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4",
@@ -133,3 +134,23 @@ def create_trendyol_llm(
     llm.use_think_mode = use_think_mode
     
     return llm
+
+
+def create_openai_llm(
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.3,
+    max_tokens: int | None = 512,
+):
+    """
+    OpenAI API uzerinden bulut LLM kullanir.
+
+    Notlar:
+    - API key kodda tutulmaz; OPENAI_API_KEY env degiskeniyle okunur.
+    - LangSmith tracing icin LANGCHAIN_API_KEY ve LANGCHAIN_TRACING_V2 env
+      degiskenleri kullanilir (python-dotenv ile yuklenebilir).
+    """
+    return ChatOpenAI(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )

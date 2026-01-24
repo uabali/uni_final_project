@@ -4,16 +4,16 @@ version = "0.1.0"
 description = "RAG (Retrieval-Augmented Generation) Pipeline"
 requires-python = ">=3.11"
 dependencies = [
-    # Core LangChain
-    "langchain==0.3.14",
-    "langchain-community==0.3.14",
-    "langchain-core==0.3.29",
-    "langchain-text-splitters>=0.3.0",
-    "langchain-experimental>=0.3.0",
-    "langchain-openai>=0.2.0",
-    "langchain-qdrant>=0.2.0",
-    "langchain-huggingface>=0.1.0",
-    "langgraph>=0.2.0",
+    # Core LangChain (en son uyumlu versiyonlar)
+    "langchain",
+    "langchain-community",
+    "langchain-core",
+    "langchain-text-splitters",
+    "langchain-experimental",
+    "langchain-openai",
+    "langchain-qdrant",
+    "langchain-huggingface",
+    "langgraph",
     # Vector Store
     "qdrant-client>=1.10.0",
     "chromadb>=0.4.0",
@@ -41,6 +41,8 @@ dependencies = [
     # Utilities
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
+    "cachetools>=5.3.0",  # TTL Cache for reranker
+    "rank-bm25>=0.2.2",  # BM25 for hybrid retrieval
     # Visualization
     "matplotlib>=3.8.0",
     # Web UI

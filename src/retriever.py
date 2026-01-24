@@ -10,10 +10,87 @@ Akıllı stratejiler kullanarak arama kalitesini artırır.
 - Dynamic K: Soru karmaşıklığına göre getirilecek parça sayısını ayarlar.
 - Multi-query: Bir soruyu birden fazla şekilde ifade ederek arama yapar (daha iyi retrieval).
 - Re-ranking: Cross-encoder ile sonuçları yeniden sıralar (%15-25 daha iyi accuracy).
+- Adaptive Reranking: Basit sorgular için reranking'i atlayarak latency azaltır.
 """
 
-from langchain.retrievers import EnsembleRetriever
+import os
+from typing import Dict, List, Tuple
+from langchain_core.documents import Document
 from langchain_community.retrievers import BM25Retriever
+
+
+# ============================================================
+# 0️⃣ ADAPTIVE RERANKING (AKILLI SKIP)
+# ============================================================
+def should_skip_rerank(question: str, fast_mode: bool = False) -> bool:
+    """
+    Reranking'in atlanip atlanmayacagini belirler (latency optimizasyonu).
+    
+    Skip Kosullari:
+    1. fast_mode=True ise (kullanici hiz istiyorsa)
+    2. Soru cok kisa (< 4 kelime) VE basit keyword sorgusu ise
+    3. RERANK_FAST_MODE env var True ise
+    
+    Args:
+        question: Kullanici sorusu
+        fast_mode: Hizli mod aktif mi (varsayilan: False)
+        
+    Returns:
+        bool: True ise reranking atlanir
+        
+    Ornekler:
+        - "Python" -> True (tek kelime, skip)
+        - "API nedir" -> True (2 kelime, basit, skip)
+        - "Python'da async nasil calisir ve neden onemlidir" -> False (karmasik, rerank)
+    """
+    # Env var kontrolu (global override)
+    env_fast_mode = os.getenv("RERANK_FAST_MODE", "false").lower() == "true"
+    if fast_mode or env_fast_mode:
+        return True
+    
+    # Soru analizi
+    q = question.strip().lower()
+    words = q.split()
+    word_count = len(words)
+    
+    # Cok kisa sorgular (< 4 kelime)
+    if word_count < 4:
+        # Ama karmasiklik gostergesi varsa rerank yap
+        complexity_indicators = ["nasil", "neden", "hangi", "ne zaman", "arasindaki fark"]
+        has_complexity = any(ind in q for ind in complexity_indicators)
+        if not has_complexity:
+            return True  # Basit kisa sorgu -> skip
+    
+    # Tek kelime sorgulari her zaman skip
+    if word_count == 1:
+        return True
+    
+    return False  # Karmasik sorgu -> rerank yap
+
+
+def get_rerank_decision(question: str, use_rerank: bool, reranker, fast_mode: bool = False) -> bool:
+    """
+    Reranking yapilip yapilmayacagina karar verir.
+    
+    Args:
+        question: Kullanici sorusu
+        use_rerank: Kullanici tercihi (True/False)
+        reranker: Reranker modeli (None ise zaten yapamaz)
+        fast_mode: Hizli mod aktif mi
+        
+    Returns:
+        bool: True ise reranking yapilacak
+    """
+    # Temel kontroller
+    if not use_rerank or reranker is None:
+        return False
+    
+    # Adaptive skip kontrolu
+    if should_skip_rerank(question, fast_mode):
+        print(f"Reranking: Skipped (basit sorgu veya fast_mode)")
+        return False
+    
+    return True
 
 
 # ============================================================
@@ -92,6 +169,69 @@ def auto_select_strategy(question: str) -> str:
 
 
 # ============================================================
+# 3️⃣ HYBRID MERGE (RRF - WEIGHTED)
+# ============================================================
+def _doc_key(doc: Document) -> Tuple[str, str]:
+    """Dokumanlari benzersizlestirmek icin anahtar."""
+    source = str(doc.metadata.get("source", ""))
+    content = doc.page_content[:200]
+    return (source, content)
+
+
+def _rrf_merge(
+    vector_docs: List[Document],
+    bm25_docs: List[Document],
+    bm25_weight: float,
+    top_k: int,
+    rrf_k: int = 60
+) -> List[Document]:
+    """
+    RRF (Reciprocal Rank Fusion) ile iki listeyi birlestirir.
+    Her liste icin skor: weight * (1 / (rrf_k + rank))
+    """
+    scores: Dict[Tuple[str, str], float] = {}
+    doc_map: Dict[Tuple[str, str], Document] = {}
+
+    vector_weight = 1.0 - bm25_weight
+
+    for rank, doc in enumerate(vector_docs, start=1):
+        key = _doc_key(doc)
+        doc_map[key] = doc
+        scores[key] = scores.get(key, 0.0) + (vector_weight / (rrf_k + rank))
+
+    for rank, doc in enumerate(bm25_docs, start=1):
+        key = _doc_key(doc)
+        doc_map[key] = doc
+        scores[key] = scores.get(key, 0.0) + (bm25_weight / (rrf_k + rank))
+
+    # Skorlara gore sirala
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    merged_docs = [doc_map[key] for key, _ in ranked]
+    return merged_docs[:top_k]
+
+
+class HybridRetriever:
+    """
+    Vektor ve BM25 retriever'larini RRF ile birlestiren custom retriever.
+    LangChain 1.x ile uyumlu (EnsembleRetriever yerine).
+    """
+
+    def __init__(self, vector_retriever, bm25_retriever, bm25_weight: float = 0.3, top_k: int = 6):
+        self.vector_retriever = vector_retriever
+        self.bm25_retriever = bm25_retriever
+        self.bm25_weight = bm25_weight
+        self.top_k = top_k
+
+    def get_relevant_documents(self, query: str) -> List[Document]:
+        vector_docs = self.vector_retriever.get_relevant_documents(query)
+        bm25_docs = self.bm25_retriever.get_relevant_documents(query)
+        return _rrf_merge(vector_docs, bm25_docs, self.bm25_weight, self.top_k)
+
+    def __call__(self, query: str) -> List[Document]:
+        return self.get_relevant_documents(query)
+
+
+# ============================================================
 # 4️⃣ HYBRID RETRIEVER (VEKTÖR + BM25 BİRLEŞİMİ)
 # ============================================================
 def create_hybrid_retriever(
@@ -104,7 +244,7 @@ def create_hybrid_retriever(
 ):
     """
     Hybrid Retriever oluşturur: Hem anlamsal (vektör) hem de kelime (BM25) araması yapar.
-    Sonuçları ağırlıklandırarak (Ensemble) birleştirir.
+    Sonuçları ağırlıklandırarak (RRF) birleştirir.
     """
     vector_retriever = vectorstore.as_retriever(
         search_type="mmr",
@@ -117,9 +257,11 @@ def create_hybrid_retriever(
 
     bm25_retriever.k = k
 
-    return EnsembleRetriever(
-        retrievers=[vector_retriever, bm25_retriever],
-        weights=[1 - bm25_weight, bm25_weight]
+    return HybridRetriever(
+        vector_retriever=vector_retriever,
+        bm25_retriever=bm25_retriever,
+        bm25_weight=bm25_weight,
+        top_k=k
     )
 
 
@@ -142,7 +284,8 @@ def create_retriever(
     num_queries=3,
     use_rerank=False,
     reranker=None,
-    rerank_top_n=20
+    rerank_top_n=20,
+    fast_mode=False
 ):
     """
     Tüm ayarları yaparak nihai Retriever objesini oluşturur.
@@ -159,10 +302,14 @@ def create_retriever(
         use_rerank (bool): Re-ranking kullan (varsayılan: False).
         reranker: CrossEncoder modeli (rerank için gerekli).
         rerank_top_n (int): Reranking için alınacak doküman sayısı (varsayılan: 20).
+        fast_mode (bool): Hizli mod - basit sorgularda reranking atlanir (varsayilan: False).
         
     Returns:
         Retriever veya Callable: LangChain tarafından kullanılabilir arama motoru.
     """
+    # Adaptive reranking karari
+    should_rerank = get_rerank_decision(question, use_rerank, reranker, fast_mode)
+    
     # Multi-query kullanılıyorsa
     if use_multi_query and llm:
         from src.query_translation import create_multi_query_retriever
@@ -181,8 +328,8 @@ def create_retriever(
             bm25_weight=bm25_weight
         )
         
-        # Multi-query + Rerank kombinasyonu
-        if use_rerank and reranker:
+        # Multi-query + Rerank kombinasyonu (adaptive skip ile)
+        if should_rerank:
             from src.reranker import create_rerank_retriever
             return lambda q: create_rerank_retriever(
                 base_retriever=base_retriever,
@@ -193,6 +340,7 @@ def create_retriever(
             )
         
         return base_retriever
+    
     # 1. Dinamik K Hesapla
     k = calculate_dynamic_k(question, base_k)
 
@@ -201,7 +349,7 @@ def create_retriever(
         strategy = auto_select_strategy(question)
 
     # Rerank kullanılıyorsa, daha fazla doküman al (rerank için)
-    if use_rerank and reranker:
+    if should_rerank:
         search_k = max(rerank_top_n, k * 2)  # Rerank için daha fazla al
     else:
         search_k = k
@@ -252,8 +400,8 @@ def create_retriever(
             search_kwargs={"k": search_k, "fetch_k": fetch_k, "lambda_mult": lambda_mult}
         )
     
-    # Rerank kullanılıyorsa, base retriever'ı rerank ile sarmala
-    if use_rerank and reranker:
+    # Rerank kullanılıyorsa, base retriever'ı rerank ile sarmala (adaptive skip ile)
+    if should_rerank:
         from src.reranker import create_rerank_retriever
         
         def rerank_wrapper(query: str):
