@@ -1,7 +1,8 @@
 from src.loader import load_documents
 import src.splitter as splitter
 from src.vectorstore import create_embeddings, create_vectorstore
-from src.llm import create_llm
+from src.llm import create_llm , create_trendyol_llm
+
 from src.retriever import create_retriever, build_bm25_retriever
 from src.reranker import create_reranker
 from langchain_core.prompts import PromptTemplate
@@ -50,7 +51,7 @@ def main():
         sys.exit(1)
 
     # Create LLM
-    llm = create_llm()
+    llm = create_trendyol_llm()
 
     # Build BM25 ONCE at startup (for hybrid search)
     bm25_retriever = None

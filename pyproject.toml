@@ -46,7 +46,8 @@ dependencies = [
     # Web UI
     "streamlit>=1.28.0",
     # Scientific Computing (for sentence-transformers, numpy arrays)
-    "numpy>=1.24.0",
+    # NumPy 2.2 veya daha düşük (vLLM/Numba uyumluluğu için)
+    "numpy>=1.24.0,<2.3",
     "scikit-learn>=1.3.0",  # BM25Retriever için gerekli
 ]
 
