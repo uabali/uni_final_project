@@ -111,6 +111,9 @@ models/
 *.gguf
 *.ggml
 
+# MkDocs build output
+site/
+
 # Personal notes and temporary files
 MYNOTE.txt
 *.tmp
@@ -144,3 +147,18 @@ temp/
 *.wav
 *.mp3
 *.flac
+
+pyproject.toml
+LICENSE
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+SECURITY.md
+
+# LangSmith
+.langsmith/
+MkDocs
+
+# MkDocs
+site/
+docs/
+mkdocs.yml

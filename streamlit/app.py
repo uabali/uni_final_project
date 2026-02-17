@@ -2,59 +2,151 @@
 Streamlit RAG Chatbot Application
 
 Features:
-- Chat interface (vLLM + Qdrant)
+- Chat interface (LLM backend + Qdrant)
 - Sidebar for document management (Incremental Upload/Delete)
 - Dynamic vectorstore updates
 - System status indicators
 """
 
-import streamlit as st
 import os
 import sys
+from pathlib import Path
+
+import streamlit as st
+from dotenv import load_dotenv
+from qdrant_client import QdrantClient
 
 # Add project root to path for imports
-sys.path.append(os.path.abspath(".."))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
-from src.loader import load_single_document
+load_dotenv(PROJECT_ROOT / ".env")
+
+from src.loader import load_documents, load_single_document
 from src.splitter import split_documents
-from src.vectorstore import create_embeddings, create_vectorstore, add_documents_to_collection, delete_from_collection
-from src.llm import create_llm
-from src.retriever import create_retriever
+from src.vectorstore import (
+    create_embeddings,
+    create_vectorstore,
+    add_documents_to_collection,
+    delete_from_collection,
+)
+from src.llm import create_llm, create_openai_llm, create_trendyol_llm
+from src.prompting import build_prompt, format_docs
+from src.retriever import create_retriever, build_bm25_retriever
 from src.reranker import create_reranker
-from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
-# Set up directories
-DATA_DIR = os.path.abspath("../data")
-QDRANT_PATH = os.path.abspath("../qdrant_db")
-os.makedirs(DATA_DIR, exist_ok=True)
+# Set up directories and config
+DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 
 st.set_page_config(page_title="RAG Asistanı", page_icon="🤖", layout="wide")
 
 # --- INITIALIZATION ---
+def detect_device():
+    forced = os.getenv("RAG_DEVICE", "").strip().lower()
+    if forced in {"cpu", "cuda"}:
+        return forced
+    if forced and forced != "auto":
+        print(f"Uyari: Gecersiz RAG_DEVICE='{forced}'. 'auto' kullaniliyor.")
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+def select_llm_backend(device: str):
+    llm_backend = os.getenv("LLM_BACKEND", "trendyol").strip().lower()
+    if llm_backend == "openai":
+        return create_openai_llm(), "OpenAI (cloud)"
+    if llm_backend in {"vllm", "trendyol"} and device != "cuda":
+        if os.getenv("OPENAI_API_KEY"):
+            return create_openai_llm(), "OpenAI (cloud, no GPU fallback)"
+        raise RuntimeError(
+            "NVIDIA GPU bulunamadi. vLLM/Trendyol backend icin CUDA gerekir. "
+            "LLM_BACKEND=openai yapin veya GPU/driver kurun."
+        )
+    if llm_backend == "vllm":
+        return create_llm(), "vLLM (local)"
+    return create_trendyol_llm(), "Trendyol (local)"
+
+
+def build_bm25_retriever_safe(docs):
+    if not docs:
+        return None
+    try:
+        return build_bm25_retriever(docs)
+    except Exception as e:
+        st.warning(f"BM25 retriever olusturulamadi: {e}")
+        return None
+
+
 @st.cache_resource
 def initialize_rag():
-    embeddings = create_embeddings()
-    # Initialize vectorstore without docs first
-    vectorstore = create_vectorstore(docs=[], embeddings=embeddings, path=QDRANT_PATH)
-    llm = create_llm()
-    
+    device = detect_device()
+    device_label = "CUDA" if device == "cuda" else "CPU"
+
+    embeddings = create_embeddings(device=device)
+
+    documents = load_documents(str(DATA_DIR))
+    if documents:
+        docs = split_documents(
+            documents,
+            method="recursive",
+            chunk_size=600,
+            chunk_overlap=100,
+        )
+    else:
+        docs = []
+
+    try:
+        QdrantClient(url=QDRANT_URL).get_collections()
+    except Exception as e:
+        raise RuntimeError(f"Qdrant baglantisi basarisiz: {e}")
+
+    vectorstore = create_vectorstore(docs, embeddings, url=QDRANT_URL)
+    llm, llm_label = select_llm_backend(device)
+
     # Initialize reranker (optional, can fail gracefully)
     reranker = None
-    try:
-        reranker = create_reranker(device="cuda")
-    except Exception as e:
-        print(f"Reranker yüklenemedi: {e}")
-    
-    return vectorstore, llm, embeddings, reranker
+    if device == "cuda":
+        try:
+            reranker = create_reranker(device="cuda")
+        except Exception as e:
+            print(f"Reranker yüklenemedi: {e}")
+
+    return vectorstore, llm, embeddings, reranker, docs, llm_label, device_label
 
 try:
-    vectorstore, llm, embeddings, reranker = initialize_rag()
+    (
+        vectorstore,
+        llm,
+        embeddings,
+        reranker,
+        initial_docs,
+        llm_label,
+        device_label,
+    ) = initialize_rag()
     st.session_state["rag_ready"] = True
+    st.session_state["llm_label"] = llm_label
+    st.session_state["device_label"] = device_label
+
+    if "bm25_docs" not in st.session_state:
+        st.session_state["bm25_docs"] = list(initial_docs)
+    if "bm25_retriever" not in st.session_state:
+        st.session_state["bm25_retriever"] = build_bm25_retriever_safe(
+            st.session_state["bm25_docs"]
+        )
 except Exception as e:
     st.error(f"Sistem başlatılamadı: {e}")
     st.stop()
+
+rag_prompt = build_prompt()
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -64,7 +156,10 @@ with st.sidebar:
     st.subheader("📊 Sistem Durumu")
     if st.session_state.get("rag_ready"):
         st.success("🟢 Vektör DB: Hazır (Qdrant)")
-        st.info("🟢 Model: LLaMA vLLM (Aktif)")
+        llm_label = st.session_state.get("llm_label", "Bilinmiyor")
+        device_label = st.session_state.get("device_label", "Bilinmiyor")
+        st.info(f"🟢 Model: {llm_label} (Aktif)")
+        st.info(f"🟢 Cihaz: {device_label}")
     else:
         st.error("🔴 Sistem: Bağlı Değil")
 
@@ -148,17 +243,18 @@ with st.sidebar:
         if st.button("Yükle ve İşle", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
+            new_chunks = []
             
             for i, uploaded_file in enumerate(uploaded_files):
                 status_text.text(f"İşleniyor: {uploaded_file.name}...")
                 
                 # 1. Save File
-                file_path = os.path.join(DATA_DIR, uploaded_file.name)
+                file_path = DATA_DIR / uploaded_file.name
                 with open(file_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
                 
                 # 2. Load & Split
-                docs = load_single_document(file_path)
+                docs = load_single_document(str(file_path))
                 
                 # Semantic veya Recursive splitter kullan
                 if use_semantic:
@@ -175,8 +271,15 @@ with st.sidebar:
                 
                 # 3. Add to Qdrant (Incremental)
                 add_documents_to_collection(vectorstore, chunks)
+                new_chunks.extend(chunks)
                 
                 progress_bar.progress((i + 1) / len(uploaded_files))
+
+            if new_chunks:
+                bm25_docs = st.session_state.get("bm25_docs", [])
+                bm25_docs.extend(new_chunks)
+                st.session_state["bm25_docs"] = bm25_docs
+                st.session_state["bm25_retriever"] = build_bm25_retriever_safe(bm25_docs)
             
             status_text.text("✅ Tüm dosyalar eklendi!")
             st.toast(f"{len(uploaded_files)} dosya vektör veritabanına eklendi.")
@@ -186,28 +289,41 @@ with st.sidebar:
     
     # FILE LIST & DELETE
     st.subheader("📚 Kayıtlı Dokümanlar")
-    files = os.listdir(DATA_DIR)
+    files = sorted([p for p in DATA_DIR.iterdir() if p.is_file()])
     if files:
-        for file in files:
+        for file_path in files:
+            file_name = file_path.name
             col1, col2 = st.columns([0.8, 0.2])
             with col1:
-                st.text(f"📄 {file}")
+                st.text(f"📄 {file_name}")
             with col2:
-                if st.button("❌", key=f"del_{file}"):
+                if st.button("❌", key=f"del_{file_name}"):
                     # 1. Delete from Qdrant
-                    file_path = os.path.join(DATA_DIR, file)
-                    delete_from_collection(vectorstore, file_path)
+                    delete_from_collection(vectorstore, str(file_path))
                     
                     # 2. Delete file
-                    os.remove(file_path)
-                    st.toast(f"{file} silindi.")
+                    file_path.unlink()
+
+                    bm25_docs = st.session_state.get("bm25_docs", [])
+                    if bm25_docs:
+                        bm25_docs = [
+                            doc
+                            for doc in bm25_docs
+                            if doc.metadata.get("source") != str(file_path)
+                        ]
+                        st.session_state["bm25_docs"] = bm25_docs
+                        st.session_state["bm25_retriever"] = build_bm25_retriever_safe(
+                            bm25_docs
+                        )
+
+                    st.toast(f"{file_name} silindi.")
                     st.rerun()
     else:
         st.info("Henüz doküman yok.")
 
 # --- MAIN CHAT ---
 st.title("🤖 RAG Asistanı")
-st.caption("LLaMA 3.1 & Qdrant ile güçlendirilmiş doküman asistanı")
+st.caption("Qdrant ile güçlendirilmiş doküman asistanı")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -218,61 +334,38 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Retrieval Chain
-def get_response(question, use_multi_query=False, num_queries=3, use_rerank=False, reranker=None, rerank_top_n=20):
+def get_response(
+    question,
+    use_multi_query=False,
+    num_queries=3,
+    use_rerank=False,
+    reranker=None,
+    rerank_top_n=20,
+    bm25_retriever=None,
+):
     retriever = create_retriever(
-        vectorstore, 
-        strategy="auto", 
+        vectorstore,
         question=question,
+        bm25_retriever=bm25_retriever,
+        strategy="auto",
         use_multi_query=use_multi_query,
         llm=llm if use_multi_query else None,
         num_queries=num_queries,
         use_rerank=use_rerank and reranker is not None,
         reranker=reranker,
-        rerank_top_n=rerank_top_n
+        rerank_top_n=rerank_top_n,
     )
-    
-    prompt = PromptTemplate(
-        input_variables=["context", "question"],
-        template="""
-Sen retrieval tabanli bir asistansin.
 
-Görevin:
-- Soruyu SADECE verilen bağlama dayanarak cevapla.
-- Harici bilgi kullanma, varsayım yapma.
-- Eğer cevap bağlamda net olarak yoksa, tam olarak şunu yaz:
-  "Baglamda cevap bulunamadi."
-
-Cevap dili ve terim politikası:
-- Normal cümleleri TÜRKÇE olarak yaz.
-- Kısaltmaları (STT, HTTP, API, OAuth, JWT, JSON, TCP/IP vb.) ve kod/komut/teknik terimleri
-  (function adları, class isimleri, değişken isimleri, API endpointleri, CLI komutları, dosya adları)
-  soruda veya bağlamda geçtiği ŞEKLİYLE KORU.
-- Bu kısaltmaları ve teknik terimleri TÜRKÇE'ye çevirmeye veya değiştirmeye çalışma;
-  sadece gerekirse yanına parantez içinde kısaca ne olduğunu açıklayabilirsin.
-
-Cevap stili:
-- Önce 1–2 cümlede KISA ve NET bir direkt cevap ver.
-- Daha sonra GEREKLIYSE önemli noktaları birkaç maddede kısaca açıkla.
-- Soru çok parçalıysa, her parçaya açıkça cevap ver (kısa ama açıklayıcı).
-- Aynı cümleyi veya fikri birden fazla kez tekrar etme; bir bilgiyi bir kez net ve kısa şekilde söylemen yeterli.
-
-Soru: {question}
-Bağlam: {context}
-
-Cevap:
-"""
-    )
-    
     chain = (
         {
             "question": RunnablePassthrough(),
-            "context": retriever
+            "context": retriever | RunnableLambda(format_docs),
         }
-        | prompt
+        | rag_prompt
         | llm
         | StrOutputParser()
     )
-    
+
     return chain.stream(question)
 
 # Input
@@ -298,7 +391,8 @@ if prompt := st.chat_input("Sorunuzu buraya yazın..."):
                 num_queries=num_q,
                 use_rerank=use_rr,
                 reranker=reranker,
-                rerank_top_n=rerank_top
+                rerank_top_n=rerank_top,
+                bm25_retriever=st.session_state.get("bm25_retriever"),
             )
             for chunk in stream:
                 full_response += chunk
