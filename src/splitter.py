@@ -1,91 +1,89 @@
 """
-Metin Parçalama Modülü (Splitter Module)
+Text Splitting Module
 
-Bu modül, yüklenen uzun dokümanları daha küçük, anlamlı parçalara (chunk) böler.
-Retrieval başarısı için kritik öneme sahiptir.
-
-Desteklenen Yöntemler:
-- recursive: Karakter sayısına göre bölme (hızlı, varsayılan)
-- semantic: Anlamsal sınırlarda bölme (daha iyi retrieval, yavaş)
+Splits loaded documents into smaller, coherent chunks for embedding and retrieval.
+Chunk quality is the single biggest lever for RAG accuracy.
 """
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+import re
 from typing import Optional
 
-# SemanticChunker import (langchain_experimental gerekli)
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 try:
     from langchain_experimental.text_splitter import SemanticChunker
     SEMANTIC_CHUNKER_AVAILABLE = True
 except ImportError:
     SEMANTIC_CHUNKER_AVAILABLE = False
-    print("Uyarı: SemanticChunker bulunamadı. 'langchain-experimental' paketini yükleyin.")
+
+PDF_SEPARATORS = [
+    "\n\n\n",
+    "\n\n",
+    "\n",
+    ". ",
+    "? ",
+    "! ",
+    "; ",
+    ", ",
+    " ",
+    "",
+]
+
+
+def _clean_text(text: str) -> str:
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"(\n\s*){3,}", "\n\n", text)
+    return text.strip()
+
 
 def split_documents(
     documents,
-    chunk_size: int = 600,
-    chunk_overlap: int = 100,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 200,
     method: str = "recursive",
     embeddings=None,
 ):
-    """
-    Dokümanları küçük parçalara böler.
-    
-    Args:
-        documents (list): Bölünecek Document objeleri listesi.
-        chunk_size (int): Her parçanın maksimum karakter sayısı (recursive için, varsayılan: 800).
-        chunk_overlap (int): Parçalar arası örtüşme miktarı (recursive için, varsayılan: 120).
-        method (str): Bölme yöntemi - "recursive" (hızlı) veya "semantic" (daha iyi).
-        embeddings: Embedding modeli (semantic için gerekli, None ise otomatik oluşturulur).
-                             
-    Returns:
-        list: Bölünmüş (chunked) Document objeleri.
-        
-    Bağlantılı Olduğu Yerler:
-        - vectorstore.py: Bölünen parçalar Embedding işlemine girer.
-    """
     if not documents:
         return []
-    
-    # Semantic Splitter kullanılıyorsa
-    if method == "semantic":
-        if not SEMANTIC_CHUNKER_AVAILABLE:
-            print("Hata: SemanticChunker mevcut değil. Recursive splitter'a geri dönülüyor...")
-            method = "recursive"
-        else:
-            # Embeddings yoksa oluştur
-            if embeddings is None:
-                print("Semantic Splitter için embedding modeli oluşturuluyor...")
-                embeddings = HuggingFaceEmbeddings(
-                    model_name="BAAI/bge-m3",
-                    model_kwargs={"device": "cuda"},
-                    encode_kwargs={"normalize_embeddings": True}
-                )
-            
-            # SemanticChunker oluştur
-            # breakpoint_threshold_type: "percentile" (benzerlik yüzdesi) veya "standard_deviation"
-            # breakpoint_threshold_amount: Eşik değeri (0.95 = %95 benzerlik altında böl)
-            try:
-                text_splitter = SemanticChunker(
-                    embeddings=embeddings,
-                    breakpoint_threshold_type="percentile",
-                    breakpoint_threshold_amount=0.95  # %95 benzerlik eşiği
-                )
-                print("Semantic Splitter kullanılıyor (anlamsal bölme)...")
-            except TypeError as e:
-                # Eğer parametreler uyumsuzsa, basit versiyonu dene
-                print(f"SemanticChunker parametre hatası: {e}. Basit konfigürasyon deneniyor...")
-                text_splitter = SemanticChunker(embeddings=embeddings)
-                print("Semantic Splitter kullanılıyor (varsayılan ayarlarla)...")
-    
-    # Recursive Character Splitter (varsayılan veya fallback)
-    if method == "recursive":
+
+    for doc in documents:
+        doc.page_content = _clean_text(doc.page_content)
+
+    if method == "semantic" and SEMANTIC_CHUNKER_AVAILABLE:
+        if embeddings is None:
+            from langchain_huggingface import HuggingFaceEmbeddings
+            embeddings = HuggingFaceEmbeddings(
+                model_name="BAAI/bge-m3",
+                model_kwargs={"device": "cuda"},
+                encode_kwargs={"normalize_embeddings": True},
+            )
+        try:
+            text_splitter = SemanticChunker(
+                embeddings=embeddings,
+                breakpoint_threshold_type="percentile",
+                breakpoint_threshold_amount=0.92,
+            )
+        except TypeError:
+            text_splitter = SemanticChunker(embeddings=embeddings)
+        print("Splitter: semantic")
+    else:
+        if method == "semantic" and not SEMANTIC_CHUNKER_AVAILABLE:
+            print("Warning: SemanticChunker unavailable, falling back to recursive.")
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            separators=PDF_SEPARATORS,
+            strip_whitespace=True,
+            add_start_index=True,
+            length_function=len,
         )
-        print(f"Recursive Splitter kullanılıyor (chunk_size={chunk_size}, overlap={chunk_overlap})...")
-    
+        print(f"Splitter: recursive (size={chunk_size}, overlap={chunk_overlap})")
+
     docs = text_splitter.split_documents(documents)
-    print(f"Toplam {len(docs)} chunk oluşturuldu.")
+
+    for idx, doc in enumerate(docs):
+        doc.metadata["chunk_index"] = idx
+
+    print(f"Chunks created: {len(docs)}")
     return docs

@@ -25,20 +25,17 @@ wheels/
 venv/
 ENV/
 env/
-vllm-env/
 
-# Package Managers
-uv.lock
-uv.lock.json
-*.lock
-poetry.lock
-Pipfile.lock
+# UV Cache
+.uv-cache/
 
 # Environment Variables
-data/
-.venv/
+.env
 .env.local
 .env.*.local
+
+# Local Python version (pyenv, etc.)
+.python-version
 
 # IDEs
 .vscode/
@@ -47,55 +44,23 @@ data/
 *.swo
 *~
 .cursor/
-.cursor
-.python-version
 
 # OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 
-# Project Specific
-# Vector Databases (large files)
+# Vector Databases (runtime data)
 qdrant_storage/
-qdrant_db/
 chroma_db/
+.rag_cache/
 
-# Data files
+# Data files (user uploads)
 data/
 !data/.gitkeep
 
-# Streamlit
-.streamlit/
-
-# Docker
-docker-compose.yml
-docker-compose.override.yml
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.hypothesis/
-
-# Linting & Type Checking
-.ruff_cache/
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
 # Logs
-*.log
 logs/
-*.log.*
+*.log
 
 # Models (large files)
 models/
@@ -104,61 +69,19 @@ models/
 *.pt
 *.pth
 *.ckpt
-*.h5
-*.onnx
-*.pb
-*.tflite
 *.gguf
-*.ggml
 
 # MkDocs build output
 site/
 
-# Personal notes and temporary files
-MYNOTE.txt
-*.tmp
-*.temp
-*.bak
-*.backup
-*~
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Benchmark results and outputs
-benchmark_results*.json
-benchmark_results*.jsonl
-*.jsonl
-!data/.gitkeep
+# Type Checking
+.ruff_cache/
+.mypy_cache/
 
-# Cache and temporary directories
-.cache/
-tmp/
-temp/
-*.cache
-
-# Large data files
-*.pdf
-*.zip
-*.tar
-*.tar.gz
-*.rar
-*.7z
-*.mp4
-*.avi
-*.mov
-*.wav
-*.mp3
-*.flac
-
-pyproject.toml
-LICENSE
-CODE_OF_CONDUCT.md
-CONTRIBUTING.md
-SECURITY.md
-
-# LangSmith
-.langsmith/
-MkDocs
-
-# MkDocs
-site/
-docs/
-mkdocs.yml
+# Jupyter
+.ipynb_checkpoints/

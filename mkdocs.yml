@@ -1,0 +1,112 @@
+site_name: RAG Pipeline Documentation
+site_description: Retrieval-Augmented Generation Pipeline — Teknik Dokumantasyon
+site_url: ""
+repo_url: https://github.com/uabali/RAG
+repo_name: uabali/RAG
+
+theme:
+  name: material
+  language: tr
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Karanlik moda gec
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Aydinlik moda gec
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - glightbox
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ["."]
+          options:
+            show_source: true
+            show_root_heading: true
+            heading_level: 3
+            docstring_style: google
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.mark
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+
+nav:
+  - Ana Sayfa: index.md
+  - Baslangic:
+      - Kurulum: getting-started/installation.md
+      - Konfigurasyon: getting-started/configuration.md
+      - Ilk Calistirma: getting-started/quickstart.md
+  - Mimari:
+      - Genel Bakis: architecture/overview.md
+      - Ingestion Pipeline: architecture/ingestion.md
+      - Retrieval Pipeline: architecture/retrieval.md
+      - Generation Pipeline: architecture/generation.md
+  - Modul Referansi:
+      - Loader: modules/loader.md
+      - Splitter: modules/splitter.md
+      - Vectorstore: modules/vectorstore.md
+      - Retriever: modules/retriever.md
+      - Reranker: modules/reranker.md
+      - LLM: modules/llm.md
+      - Prompting: modules/prompting.md
+      - Query Translation: modules/query_translation.md
+  - Arayuzler:
+      - CLI (main.py): interfaces/cli.md
+      - Benchmark: interfaces/benchmark.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/uabali/RAG

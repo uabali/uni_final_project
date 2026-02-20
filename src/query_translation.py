@@ -35,16 +35,17 @@ def generate_multi_queries(
         >>> # ["Python'da liste nasıl sıralanır?", "Python list sorting methods", 
         >>> #  "How to sort a list in Python", "Python liste sıralama yöntemleri"]
     """
-    prompt_template = """Kullanıcının sorusunu {num_queries} farklı şekilde ifade et.
-Her soru aynı bilgiyi farklı kelimelerle, farklı açılardan veya farklı dillerde soruyor olmalı.
-Sorular kısa ve net olmalı.
+    prompt_template = """Rephrase the user's question in {num_queries} different ways.
+Each rephrased question must seek the same information but use different wording, \
+different angles, or a different language (e.g. Turkish ↔ English).
+Keep each question short and clear.
 
-Orijinal soru: {question}
+Original question: {question}
 
-Sadece {num_queries} alternatif soru üret, her satırda bir soru. 
-Başka açıklama, numara veya işaret yapma. Sadece soruları yaz.
+Generate exactly {num_queries} alternative questions, one per line.
+Do NOT add numbering, bullets, or any explanation. Output only the questions.
 
-Alternatif sorular:"""
+Alternative questions:"""
     
     prompt = PromptTemplate(
         input_variables=["question", "num_queries"],
@@ -74,7 +75,7 @@ Alternatif sorular:"""
         return [question] + queries
         
     except Exception as e:
-        print(f"Multi-query generation hatası: {e}. Orijinal soru kullanılıyor.")
+        print(f"Multi-query generation error: {e}. Falling back to original question.")
         return [question]
 
 
@@ -110,15 +111,16 @@ def create_multi_query_retriever(
         Callable: Multi-query retriever fonksiyonu
     """
     from src.retriever import create_retriever
+    from src.retriever import run_retriever
     
     # 1. Multi-query generation
     queries = generate_multi_queries(question, llm, num_queries=num_queries)
     
-    print(f"Multi-query: {len(queries)} farklı soru ile arama yapılıyor...")
+    print(f"Multi-query: searching with {len(queries)} query variants...")
     if len(queries) > 1:
-        print(f"  Orijinal: {queries[0]}")
+        print(f"  Original: {queries[0]}")
         for i, q in enumerate(queries[1:], 1):
-            print(f"  Alternatif {i}: {q}")
+            print(f"  Variant {i}: {q}")
     
     # 2. Her query için retriever oluştur ve arama yap
     all_docs = []
@@ -135,7 +137,7 @@ def create_multi_query_retriever(
         )
         
         # Arama yap
-        docs = retriever.get_relevant_documents(query)
+        docs = run_retriever(retriever, query)
         
         # Tekrarları filtrele (aynı içeriği farklı query'lerden gelmiş olabilir)
         for doc in docs:
@@ -151,7 +153,7 @@ def create_multi_query_retriever(
     # 4. Top k kadar al (base_k * num_queries kadar olabilir, ama base_k ile sınırla)
     final_docs = all_docs[:base_k * 2]  # Biraz fazla al, sonra kısaltılabilir
     
-    print(f"Toplam {len(all_docs)} benzersiz doküman bulundu, {len(final_docs)} kullanılıyor.")
+    print(f"Found {len(all_docs)} unique documents, using {len(final_docs)}.")
     
     # 5. Retriever-like fonksiyon döndür
     def multi_query_retriever(query: str):

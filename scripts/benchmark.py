@@ -11,22 +11,28 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from langchain_core.output_parsers import StrOutputParser
 from dotenv import load_dotenv
+from langchain_core.output_parsers import StrOutputParser
+
+# Add project root to path for imports
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.loader import load_documents
+from src.llm import create_llm
+from src.prompting import build_prompt, format_docs
+from src.reranker import create_reranker
+from src.retriever import build_bm25_retriever, create_retriever
 from src.splitter import split_documents
 from src.vectorstore import create_embeddings, create_vectorstore
-from src.retriever import build_bm25_retriever, create_retriever
-from src.reranker import create_reranker
-from src.llm import create_llm, create_trendyol_llm, create_openai_llm
-from src.prompting import build_prompt, format_docs
 
 
 def _now_iso() -> str:
@@ -121,12 +127,13 @@ def _run_retriever(retriever, query: str):
     raise TypeError(f"Unsupported retriever type: {type(retriever).__name__}")
 
 
-def _get_llm(backend: str):
-    if backend == "openai":
-        return create_openai_llm()
-    if backend == "vllm":
-        return create_llm()
-    return create_trendyol_llm()
+def _get_llm(_backend: str):
+    """
+    Tek backend: Meta-Llama-3.1-8B-Instruct-AWQ-INT4 (vLLM local).
+
+    backend parametresi sadece CLI uyumluluğu için korunur.
+    """
+    return create_llm()
 
 
 def _get_llm_name(llm) -> str:
@@ -194,7 +201,7 @@ def run_benchmark(args):
     if not dataset:
         raise ValueError("Dataset is empty.")
 
-    backend = args.backend or os.getenv("LLM_BACKEND", "trendyol").strip().lower()
+    backend = args.backend or "local-llama3.1-awq"
     pipeline = build_pipeline(
         split_method=args.split_method,
         use_multi_query=args.use_multi_query,
@@ -393,7 +400,11 @@ def parse_args():
     parser.add_argument("--runs", type=int, default=1, help="Number of full dataset passes")
     parser.add_argument("--warmup", type=int, default=1, help="Number of warmup queries")
     parser.add_argument("--limit", type=int, default=None, help="Limit dataset size")
-    parser.add_argument("--backend", choices=["openai", "trendyol", "vllm"], default=None)
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help="Artık yalnızca local-llama3.1-awq backend kullanılır (parametre görmezden gelinir).",
+    )
     parser.add_argument("--split-method", choices=["recursive", "semantic"], default="recursive")
     parser.add_argument("--use-multi-query", action="store_true")
     parser.add_argument("--use-rerank", action="store_true")

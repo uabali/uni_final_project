@@ -225,6 +225,8 @@ def rerank_documents(
     """
     if not documents:
         return []
+
+    verbose = os.getenv("RERANK_VERBOSE", "false").lower() == "true"
     
     if not CROSS_ENCODER_AVAILABLE:
         print("Uyarı: Reranker mevcut değil. Orijinal sıralama kullanılıyor.")
@@ -240,7 +242,8 @@ def rerank_documents(
         cache_key = _generate_cache_key(query, documents, top_k)
         cached_result = cache.get(cache_key)
         if cached_result is not None:
-            print(f"Reranking: Cache hit! ({len(cached_result)} doküman)")
+            if verbose:
+                print(f"Reranking: Cache hit! ({len(cached_result)} doküman)")
             return cached_result
     
     # ============================================================
@@ -260,13 +263,18 @@ def rerank_documents(
     scored_docs = list(zip(scores, documents))
     scored_docs.sort(key=lambda x: x[0], reverse=True)
     
-    # Top-k kadar al
-    reranked_docs = [doc for _, doc in scored_docs]
-    if top_k:
-        reranked_docs = reranked_docs[:top_k]
+    # Top-k kadar al ve skorlari metadata'ya yaz
+    reranked_docs = []
+    for score, doc in scored_docs[:top_k] if top_k else scored_docs:
+        doc.metadata["rerank_score"] = float(score)
+        reranked_docs.append(doc)
     
     max_score = float(max(scores)) if len(scores) > 0 else 0.0
-    print(f"Reranking: {len(documents)} doküman {len(reranked_docs)}'e indirildi (en iyi skor: {max_score:.3f})")
+    if verbose:
+        print(
+            f"Reranking: {len(documents)} doküman {len(reranked_docs)}'e indirildi "
+            f"(en iyi skor: {max_score:.3f})"
+        )
     
     # ============================================================
     # CACHE STORE
@@ -307,11 +315,14 @@ def create_rerank_retriever(
         List[Document]: Rerank edilmiş dokümanlar
     """
     # 1. Base retriever ile daha fazla doküman al (rerank için)
-    if hasattr(base_retriever, 'get_relevant_documents'):
+    if hasattr(base_retriever, "invoke"):
+        docs = base_retriever.invoke(query)
+    elif hasattr(base_retriever, "get_relevant_documents"):
         docs = base_retriever.get_relevant_documents(query)
-    else:
-        # Callable retriever
+    elif callable(base_retriever):
         docs = base_retriever(query)
+    else:
+        docs = []
     
     # Rerank için yeterli doküman yoksa, direkt döndür
     if len(docs) <= 1:

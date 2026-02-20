@@ -4,7 +4,7 @@ This repo contains a Retrieval-Augmented Generation (RAG) pipeline with:
 - PDF/TXT ingestion + splitting
 - Vector search (Qdrant) + optional BM25
 - Optional reranker
-- LLM backend: OpenAI (cloud) or vLLM (local)
+- LLM backend: single local vLLM model (Meta-Llama-3.1-8B-Instruct-AWQ-INT4)
 - Optional LangSmith tracing
 - A separate benchmark runner
 
@@ -46,7 +46,9 @@ LANGCHAIN_API_KEY=lsv2_...
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_PROJECT=rag-dev
 
-LLM_BACKEND=openai   # openai | trendyol | vllm
+# LLM backend is now fixed to a single local vLLM model (Meta-Llama-3.1-8B-Instruct-AWQ-INT4),
+# so this variable is ignored if set.
+# LLM_BACKEND=openai
 ```
 
 Optional reranker settings:
@@ -72,29 +74,24 @@ If you are NOT benchmarking, you only need `main.py`.
 
 ## 4) Benchmark Runner
 
-`benchmark.py` runs the same pipeline over a dataset and writes:
+`scripts/benchmark.py` runs the same pipeline over a dataset and writes:
 - `logs/benchmark_results.jsonl`
 - `logs/benchmark_results_summary.json`
 
-### Example: OpenAI
+### Example: vLLM (local, fixed backend)
 ```
-python benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --backend openai
-```
-
-### Example: vLLM (local)
-```
-python benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --backend vllm
+python scripts/benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5
 ```
 
 If you want TTFT (time-to-first-token):
 ```
-python benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --backend vllm --stream
+python scripts/benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --stream
 ```
 
 GPU comparison example:
 ```
-CUDA_VISIBLE_DEVICES=0 python benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --backend vllm --gpu-label "GPU0"
-CUDA_VISIBLE_DEVICES=1 python benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --backend vllm --gpu-label "GPU1"
+CUDA_VISIBLE_DEVICES=0 python scripts/benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --gpu-label "GPU0"
+CUDA_VISIBLE_DEVICES=1 python scripts/benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --gpu-label "GPU1"
 ```
 
 Important:
@@ -137,7 +134,7 @@ uv sync
 ## 7) Project Structure
 
 - `main.py`: interactive RAG app
-- `benchmark.py`: benchmark runner
+- `scripts/benchmark.py`: benchmark runner
 - `src/loader.py`: PDF/TXT loading
 - `src/splitter.py`: recursive/semantic split
 - `src/vectorstore.py`: Qdrant vector store

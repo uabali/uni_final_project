@@ -14,82 +14,48 @@ Akıllı stratejiler kullanarak arama kalitesini artırır.
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Tuple
-from langchain_core.documents import Document
+
 from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
+
+
+def run_retriever(retriever, query: str) -> List[Document]:
+    """
+    Farkli retriever arabirimlerini tek yerden calistirir.
+
+    Destek sirası:
+    1) invoke(query)
+    2) get_relevant_documents(query)
+    3) callable(query)
+    """
+    if hasattr(retriever, "invoke"):
+        docs = retriever.invoke(query)
+        return docs if isinstance(docs, list) else []
+
+    if hasattr(retriever, "get_relevant_documents"):
+        docs = retriever.get_relevant_documents(query)
+        return docs if isinstance(docs, list) else []
+
+    if callable(retriever):
+        docs = retriever(query)
+        return docs if isinstance(docs, list) else []
+
+    return []
 
 
 # ============================================================
-# 0️⃣ ADAPTIVE RERANKING (AKILLI SKIP)
+# 0. RERANK DECISION
 # ============================================================
-def should_skip_rerank(question: str, fast_mode: bool = False) -> bool:
-    """
-    Reranking'in atlanip atlanmayacagini belirler (latency optimizasyonu).
-    
-    Skip Kosullari:
-    1. fast_mode=True ise (kullanici hiz istiyorsa)
-    2. Soru cok kisa (< 4 kelime) VE basit keyword sorgusu ise
-    3. RERANK_FAST_MODE env var True ise
-    
-    Args:
-        question: Kullanici sorusu
-        fast_mode: Hizli mod aktif mi (varsayilan: False)
-        
-    Returns:
-        bool: True ise reranking atlanir
-        
-    Ornekler:
-        - "Python" -> True (tek kelime, skip)
-        - "API nedir" -> True (2 kelime, basit, skip)
-        - "Python'da async nasil calisir ve neden onemlidir" -> False (karmasik, rerank)
-    """
-    # Env var kontrolu (global override)
-    env_fast_mode = os.getenv("RERANK_FAST_MODE", "false").lower() == "true"
-    if fast_mode or env_fast_mode:
-        return True
-    
-    # Soru analizi
-    q = question.strip().lower()
-    words = q.split()
-    word_count = len(words)
-    
-    # Cok kisa sorgular (< 4 kelime)
-    if word_count < 4:
-        # Ama karmasiklik gostergesi varsa rerank yap
-        complexity_indicators = ["nasil", "neden", "hangi", "ne zaman", "arasindaki fark"]
-        has_complexity = any(ind in q for ind in complexity_indicators)
-        if not has_complexity:
-            return True  # Basit kisa sorgu -> skip
-    
-    # Tek kelime sorgulari her zaman skip
-    if word_count == 1:
-        return True
-    
-    return False  # Karmasik sorgu -> rerank yap
-
-
 def get_rerank_decision(question: str, use_rerank: bool, reranker, fast_mode: bool = False) -> bool:
-    """
-    Reranking yapilip yapilmayacagina karar verir.
-    
-    Args:
-        question: Kullanici sorusu
-        use_rerank: Kullanici tercihi (True/False)
-        reranker: Reranker modeli (None ise zaten yapamaz)
-        fast_mode: Hizli mod aktif mi
-        
-    Returns:
-        bool: True ise reranking yapilacak
-    """
-    # Temel kontroller
     if not use_rerank or reranker is None:
         return False
-    
-    # Adaptive skip kontrolu
-    if should_skip_rerank(question, fast_mode):
-        print(f"Reranking: Skipped (basit sorgu veya fast_mode)")
+
+    env_fast = os.getenv("RERANK_FAST_MODE", "false").lower() == "true"
+    if fast_mode or env_fast:
         return False
-    
+
     return True
 
 
@@ -115,27 +81,17 @@ def build_bm25_retriever(docs, k=6):
 # ============================================================
 # 2️⃣ DYNAMIC K (SORU KARMAŞIKLIĞINA GÖRE PARÇA SAYISI)
 # ============================================================
-def calculate_dynamic_k(question: str, base_k: int = 6, max_k: int = 12) -> int:
-    """
-    Sorunun karmaşıklığına göre 'k' (getirilecek chunk sayısı) değerini hesaplar.
-    Karmaşık sorular ("ve", "neden", "nasıl") daha fazla bağlama ihtiyaç duyar.
-    
-    Args:
-        question (str): Kullanıcı sorusu.
-        base_k (int): Temel chunk sayısı (varsayılan: 6).
-        
-    Returns:
-        int: Hesaplanan k değeri.
-    """
+def calculate_dynamic_k(question: str, base_k: int = 8, max_k: int = 15) -> int:
     q = question.lower()
-    indicators = ["ve", "neden", "nasil", "hangi", "ne zaman", "kim"]
+    indicators = ["ve", "neden", "nasil", "hangi", "ne zaman", "kim", "arasindaki fark",
+                   "karsilastir", "and", "how", "why", "which"]
     score = sum(1 for x in indicators if x in q)
 
     if score >= 2:
-        return min(base_k + 4, max_k)  # Çok karmaşık -> +4 chunk
+        return min(base_k + 4, max_k)
     elif score == 1:
-        return min(base_k + 2, max_k)  # Orta -> +2 chunk
-    return base_k  # Basit -> varsayılan
+        return min(base_k + 2, max_k)
+    return base_k
 
 
 # ============================================================
@@ -223,8 +179,11 @@ class HybridRetriever:
         self.top_k = top_k
 
     def get_relevant_documents(self, query: str) -> List[Document]:
-        vector_docs = self.vector_retriever.get_relevant_documents(query)
-        bm25_docs = self.bm25_retriever.get_relevant_documents(query)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            vec_future = executor.submit(run_retriever, self.vector_retriever, query)
+            bm25_future = executor.submit(run_retriever, self.bm25_retriever, query)
+            vector_docs = vec_future.result()
+            bm25_docs = bm25_future.result()
         return _rrf_merge(vector_docs, bm25_docs, self.bm25_weight, self.top_k)
 
     def __call__(self, query: str) -> List[Document]:
@@ -240,28 +199,20 @@ def create_hybrid_retriever(
     k,
     fetch_k,
     lambda_mult,
-    bm25_weight
+    bm25_weight,
 ):
-    """
-    Hybrid Retriever oluşturur: Hem anlamsal (vektör) hem de kelime (BM25) araması yapar.
-    Sonuçları ağırlıklandırarak (RRF) birleştirir.
-    """
     vector_retriever = vectorstore.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k": k,
-            "fetch_k": fetch_k,
-            "lambda_mult": lambda_mult
-        }
+        search_type="similarity",
+        search_kwargs={"k": k},
     )
 
-    bm25_retriever.k = k
+    bm25_retriever.k = max(k, int(k * 1.5))
 
     return HybridRetriever(
         vector_retriever=vector_retriever,
         bm25_retriever=bm25_retriever,
         bm25_weight=bm25_weight,
-        top_k=k
+        top_k=k,
     )
 
 
@@ -273,19 +224,19 @@ def create_retriever(
     question,
     bm25_retriever=None,
     strategy="auto",
-    base_k=6,
-    fetch_k=20,
-    lambda_mult=0.7,
-    score_threshold=0.75,
+    base_k=8,
+    fetch_k=30,
+    lambda_mult=0.6,
+    score_threshold=0.70,
     metadata_filter=None,
-    bm25_weight=0.3,
+    bm25_weight=0.4,
     use_multi_query=False,
     llm=None,
     num_queries=3,
     use_rerank=False,
     reranker=None,
     rerank_top_n=20,
-    fast_mode=False
+    fast_mode=False,
 ):
     """
     Tüm ayarları yaparak nihai Retriever objesini oluşturur.
