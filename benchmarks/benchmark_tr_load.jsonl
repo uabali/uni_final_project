@@ -1,0 +1,30 @@
+{"input":"Daily Scrum kac dakika surer?","scenario":"factual","difficulty":"easy","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["scrum","sure"]}
+{"input":"Sprint Review toplantisinin amaci nedir?","scenario":"factual","difficulty":"easy","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["scrum","toplanti"]}
+{"input":"Definition of Done ne ise yarar?","scenario":"factual","difficulty":"easy","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["scrum","dod"]}
+{"input":"Sprint ile Product Backlog arasindaki fark nedir?","scenario":"factual","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["scrum","fark"]}
+{"input":"RAG pipeline icinde embedding asamasinin gorevi ne?","scenario":"factual","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["rag","embedding"]}
+{"input":"Qdrant neden vector db olarak kullaniliyor?","scenario":"factual","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["qdrant","architecture"]}
+{"input":"MMR retrieval ne ise yarar?","scenario":"factual","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["retrieval","mmr"]}
+{"input":"Hybrid retrievalde BM25 neyi tamamlar?","scenario":"factual","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["retrieval","bm25"]}
+{"input":"Reranker ne zaman aktif edilmeli?","scenario":"factual","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["rerank","quality"]}
+{"input":"QDRANT_AUTO_REINDEX=smart davranisi nedir?","scenario":"factual","difficulty":"easy","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["qdrant","config"]}
+{"input":"Agent neden once search_documents cagiriyor?","scenario":"factual","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["agent","tool-routing"]}
+{"input":"Tool seciminde web_search hangi durumda devreye girer?","scenario":"factual","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["agent","web-search"]}
+{"input":"RAGde hybrid ve mmr hangi soru tiplerinde daha iyi sonuc verir, kisaca karsilastir.","scenario":"multi_hop","difficulty":"hard","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["retrieval","comparison"]}
+{"input":"Qdrant + BM25 + reranker zincirinin latencyye etkisini acikla.","scenario":"multi_hop","difficulty":"hard","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["latency","pipeline"]}
+{"input":"Chunk boyutu ve overlap birlikte recall ile precisioni nasil etkiler?","scenario":"multi_hop","difficulty":"hard","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["chunking","tradeoff"]}
+{"input":"Multi-query acikken reranker kapali olursa hangi durumlarda kalite duser?","scenario":"multi_hop","difficulty":"hard","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["multi-query","rerank"]}
+{"input":"Agent fallback mekanizmasi local arama dusuk oldugunda nasil calisiyor?","scenario":"multi_hop","difficulty":"hard","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["agent","fallback"]}
+{"input":"Qdrant startup retry ayari neden gerekli, hangi hatayi azaltir?","scenario":"multi_hop","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["qdrant","resilience"]}
+{"input":"Bu projede Redis cache yapisi nasil kuruldu?","scenario":"no_answer","difficulty":"medium","requires_web":false,"no_answer_expected":true,"language":"tr","tags":["negative","out-of-scope"]}
+{"input":"Kubernetes deployment yaml dosyalari nerede?","scenario":"no_answer","difficulty":"easy","requires_web":false,"no_answer_expected":true,"language":"tr","tags":["negative","devops"]}
+{"input":"PostgreSQL migration stratejisi nasil?","scenario":"no_answer","difficulty":"medium","requires_web":false,"no_answer_expected":true,"language":"tr","tags":["negative","database"]}
+{"input":"Bu projede SSO/SAML entegrasyonu nasil yapildi?","scenario":"no_answer","difficulty":"medium","requires_web":false,"no_answer_expected":true,"language":"tr","tags":["negative","auth"]}
+{"input":"Kafka event-driven akisi hangi topiclerle calisiyor?","scenario":"no_answer","difficulty":"hard","requires_web":false,"no_answer_expected":true,"language":"tr","tags":["negative","streaming"]}
+{"input":"Bugun dolar kuru kac TL?","scenario":"live","difficulty":"easy","requires_web":true,"no_answer_expected":false,"language":"tr","tags":["live","finance"]}
+{"input":"Istanbul icin bugun hava durumu nasil?","scenario":"live","difficulty":"easy","requires_web":true,"no_answer_expected":false,"language":"tr","tags":["live","weather"]}
+{"input":"Su an altin gram fiyatinda son durum nedir?","scenario":"live","difficulty":"medium","requires_web":true,"no_answer_expected":false,"language":"tr","tags":["live","finance"]}
+{"input":"Bu hafta son dakika teknoloji haberlerinden uc madde ver.","scenario":"live","difficulty":"medium","requires_web":true,"no_answer_expected":false,"language":"tr","tags":["live","news"]}
+{"input":"(1250 / 25) + 13 islemini hesapla.","scenario":"math","difficulty":"easy","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["calculator","math"]}
+{"input":"17 * (4 + 9) - 33 sonucu nedir?","scenario":"math","difficulty":"easy","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["calculator","math"]}
+{"input":"3.14 * (12 ** 2) islemini yap.","scenario":"math","difficulty":"medium","requires_web":false,"no_answer_expected":false,"language":"tr","tags":["calculator","math"]}

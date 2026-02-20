@@ -32,6 +32,14 @@ cd RAG
 
 ## 3. Qdrant'i Baslat
 
+Onerilen (compose):
+
+```bash
+docker compose up -d qdrant
+```
+
+Alternatif (tek komut):
+
 ```bash
 docker run -d -p 6333:6333 -p 6334:6334 \
   -v $(pwd)/qdrant_storage:/qdrant/storage \

@@ -15,7 +15,7 @@ from langchain_openai import ChatOpenAI
 
 def create_llm(
     temperature: float = 0.7,
-    max_new_tokens: int = 384,
+    max_new_tokens: int = 256,
     top_p: float = 0.95,
     frequency_penalty: float = 0.0,
     presence_penalty: float = 0.85,
@@ -23,12 +23,12 @@ def create_llm(
     """
     Qwen3-8B-AWQ modelini vLLM server üzerinden ChatOpenAI ile oluşturur.
 
-    VLLM_SERVER_URL env variable ZORUNLUDUR (örn: http://localhost:8000/v1).
+    VLLM_SERVER_URL env variable ZORUNLUDUR (örn: http://localhost:6365/v1).
     Önce ./scripts/serve_vllm.sh ile vLLM server'ı başlatın.
 
     Args:
         temperature: Sampling temperature (Qwen3 non-thinking için 0.7 önerilir)
-        max_new_tokens: Maksimum output token (varsayilan 384; dengeli uzunluk)
+        max_new_tokens: Maksimum output token (varsayilan 256; hiz/kalite dengesi)
         top_p: Nucleus sampling (Qwen3 için 0.95 önerilir)
         frequency_penalty: Token frequency penalty
         presence_penalty: Tekrari azaltir (0.85)
@@ -45,7 +45,7 @@ def create_llm(
         raise ValueError(
             "Agent (tool-calling) icin vLLM server mode zorunludur.\n"
             "1. ./scripts/serve_vllm.sh ile vLLM server'i baslatin\n"
-            "2. .env dosyasina VLLM_SERVER_URL=http://localhost:8000/v1 ekleyin"
+            "2. .env dosyasina VLLM_SERVER_URL=http://localhost:6365/v1 ekleyin"
         )
 
     # Env override'lar: üretim ortamında hızlı ayar değişimi için.

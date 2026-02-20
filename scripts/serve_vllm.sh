@@ -3,12 +3,12 @@
 # vLLM Server Başlatma Scripti — Qwen3-8B-AWQ
 #
 # Bu script vLLM'i ayrı bir process olarak serve eder.
-# OpenAI-compatible API endpoint oluşturur (http://localhost:8000/v1)
+# OpenAI-compatible API endpoint oluşturur (http://localhost:6365/v1)
 #
 # Kullanım:
 #   ./scripts/serve_vllm.sh                    # Varsayılan ayarlarla
-#   ./scripts/serve_vllm.sh --port 8001       # Farklı port
-#   ./scripts/serve_vllm.sh --context 8192    # Daha kısa context
+#   ./scripts/serve_vllm.sh --port 6367       # Farklı port
+#   ./scripts/serve_vllm.sh --context 4096    # Daha kısa context
 #
 # Durdurma: Ctrl+C veya kill <PID>
 
@@ -16,9 +16,9 @@ set -e
 
 # ── Varsayılan Ayarlar ────────────────────────────────────────
 MODEL="Qwen/Qwen3-8B-AWQ"
-PORT="${VLLM_PORT:-8000}"
-CONTEXT_LEN="${VLLM_CONTEXT_LEN:-16384}"
-GPU_MEMORY="${VLLM_GPU_MEMORY:-0.85}"
+PORT="${VLLM_PORT:-6365}"
+CONTEXT_LEN="${VLLM_CONTEXT_LEN:-4096}"
+GPU_MEMORY="${VLLM_GPU_MEMORY:-0.90}"
 
 # ── Argüman Parsing ───────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -39,9 +39,9 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --port PORT          Server port (default: 8000)"
-            echo "  --context LEN        Max context length (default: 16384)"
-            echo "  --gpu-memory RATIO   GPU memory utilization (default: 0.85)"
+            echo "  --port PORT          Server port (default: 6365)"
+            echo "  --context LEN        Max context length (default: 4096)"
+            echo "  --gpu-memory RATIO   GPU memory utilization (default: 0.90)"
             echo "  --help               Show this help message"
             echo ""
             echo "Environment variables:"
@@ -102,7 +102,7 @@ echo ""
 # vLLM komutunu oluştur
 VLLM_CMD="vllm serve $MODEL \
     --port $PORT \
-    --quantization awq \
+    --quantization awq_marlin \
     --gpu-memory-utilization $GPU_MEMORY \
     --max-model-len $CONTEXT_LEN \
     --trust-remote-code \

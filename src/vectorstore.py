@@ -11,6 +11,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import hashlib
 import os
+import time
 from pathlib import Path
 
 
@@ -56,6 +57,36 @@ def _save_fingerprint(collection_name: str, fingerprint: str) -> None:
     file_path.write_text(fingerprint, encoding="utf-8")
 
 
+def _wait_for_qdrant(client: QdrantClient, url: str) -> None:
+    """Qdrant yeni kalkarken kisa sureli connection hatalarina karsi bekler."""
+    try:
+        timeout_s = float(os.getenv("QDRANT_STARTUP_TIMEOUT", "20").strip())
+    except Exception:
+        timeout_s = 20.0
+    try:
+        retry_s = float(os.getenv("QDRANT_RETRY_INTERVAL", "1").strip())
+    except Exception:
+        retry_s = 1.0
+
+    timeout_s = max(0.0, timeout_s)
+    retry_s = max(0.2, retry_s)
+    deadline = time.monotonic() + timeout_s
+    last_exc: Exception | None = None
+
+    while True:
+        try:
+            client.get_collections()
+            return
+        except Exception as exc:
+            last_exc = exc
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Qdrant baglantisi kurulamadı: {url}. "
+                    "Servisin ayakta oldugunu ve portun acik oldugunu kontrol edin."
+                ) from last_exc
+            time.sleep(retry_s)
+
+
 def create_vectorstore(
     docs, embeddings, url="http://localhost:6333", collection_name="rag_collection"
 ):
@@ -67,11 +98,8 @@ def create_vectorstore(
     3. İkisi de yoksa -> boş store döner.
     """
     client = QdrantClient(url=url)
-
-    try:
-        collections = [c.name for c in client.get_collections().collections]
-    except Exception:
-        collections = []
+    _wait_for_qdrant(client, url)
+    collections = [c.name for c in client.get_collections().collections]
 
     reindex_mode = os.getenv("QDRANT_AUTO_REINDEX", "smart").strip().lower()
     if reindex_mode not in {"true", "false", "smart"}:

@@ -19,11 +19,11 @@ vLLM ayrı bir process olarak çalışır, OpenAI-compatible API endpoint oluşt
 #### Adım 1: vLLM Server'ı Başlat
 
 ```bash
-# Varsayılan ayarlarla (port 8000, 16k context)
+# Varsayılan ayarlarla (port 6365, 16k context)
 ./scripts/serve_vllm.sh
 
 # Veya özel ayarlarla
-./scripts/serve_vllm.sh --port 8001 --context 8192
+./scripts/serve_vllm.sh --port 6367 --context 8192
 
 # Reasoning mode'u kapatmak için
 ./scripts/serve_vllm.sh --no-reasoning
@@ -32,7 +32,7 @@ vLLM ayrı bir process olarak çalışır, OpenAI-compatible API endpoint oluşt
 **Environment Variables ile:**
 
 ```bash
-export VLLM_PORT=8000
+export VLLM_PORT=6365
 export VLLM_CONTEXT_LEN=16384
 export VLLM_GPU_MEMORY=0.85
 export VLLM_ENABLE_REASONING=true
@@ -44,7 +44,7 @@ export VLLM_ENABLE_REASONING=true
 
 ```ini
 # vLLM Server URL (server mode için)
-VLLM_SERVER_URL=http://localhost:8000/v1
+VLLM_SERVER_URL=http://localhost:6365/v1
 ```
 
 #### Adım 3: Agent'ı Çalıştırın
@@ -94,7 +94,7 @@ python main.py
 
 ```bash
 vllm serve Qwen/Qwen3-8B-AWQ \
-    --port 8000 \
+    --port 6365 \
     --quantization awq \
     --gpu-memory-utilization 0.85 \
     --max-model-len 16384 \
@@ -107,7 +107,7 @@ vllm serve Qwen/Qwen3-8B-AWQ \
 
 | Parametre | Açıklama | Varsayılan | Önerilen |
 |-----------|----------|------------|----------|
-| `--port` | Server port | 8000 | 8000 |
+| `--port` | Server port | 6365 | 6365 |
 | `--quantization` | Quantization format | - | `awq` |
 | `--gpu-memory-utilization` | GPU memory kullanım oranı | 0.9 | `0.85` (10GB için güvenli) |
 | `--max-model-len` | Maksimum context length | 4096 | `16384` (16k) |
@@ -142,19 +142,19 @@ kill <PID>
 
 vLLM server başladıktan sonra OpenAI-compatible API endpoint oluşur:
 
-**Base URL:** `http://localhost:8000/v1`
+**Base URL:** `http://localhost:6365/v1`
 
 **Test:**
 
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl http://localhost:6365/health
 
 # Model listesi
-curl http://localhost:8000/v1/models
+curl http://localhost:6365/v1/models
 
 # Chat completion (test)
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:6365/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "Qwen/Qwen3-8B-AWQ",
@@ -198,7 +198,7 @@ export HUGGINGFACEHUB_API_TOKEN=your_token_here
 ./scripts/serve_vllm.sh
 
 # Başka bir terminal'de kontrol edin
-curl http://localhost:8000/health
+curl http://localhost:6365/health
 ```
 
 ### 4. Reasoning Mode Çalışmıyor
@@ -267,9 +267,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install vllm>=0.8.5
 
-EXPOSE 8000
+EXPOSE 6365
 CMD ["vllm", "serve", "Qwen/Qwen3-8B-AWQ", \
-     "--port", "8000", \
+     "--port", "6365", \
      "--quantization", "awq", \
      "--gpu-memory-utilization", "0.85", \
      "--max-model-len", "16384", \

@@ -47,10 +47,10 @@ Cevap: Daily Scrum 15 dakika surer.
 ## 5. Streamlit ile Baslat (Opsiyonel)
 
 ```bash
-streamlit run streamlit/app.py --server.headless true
+streamlit run streamlit/app.py --server.headless true --server.port 6366
 ```
 
-Tarayicida `http://localhost:8501` adresini acin.
+Tarayicida `http://localhost:6366` adresini acin.
 
 !!! info "GPU Olmadan"
     GPU yoksa `LLM_BACKEND=openai` kullanin. Embedding modeli CPU'da calisir (daha yavas ama fonksiyonel).
@@ -60,5 +60,5 @@ Tarayicida `http://localhost:8501` adresini acin.
 Tum veritabanini silip sifirdan baslamak icin:
 
 ```bash
-python reset_qdrant.py
+python scripts/reset_qdrant.py
 ```

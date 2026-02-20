@@ -64,6 +64,9 @@ RERANK_CACHE_SIZE=100            # maksimum cache girisi
 
 ```ini
 QDRANT_URL=http://localhost:6333   # Qdrant sunucu adresi
+QDRANT_COLLECTION=rag_collection   # Collection adi
+QDRANT_STARTUP_TIMEOUT=20          # saniye, servis kalkisi icin bekleme
+QDRANT_RETRY_INTERVAL=1            # saniye, retry araligi
 ```
 
 ## Cihaz Secimi (Streamlit)
@@ -81,6 +84,9 @@ RAG_DEVICE=auto    # auto | cpu | cuda
 | `LLM_BACKEND` | `trendyol` | LLM secimi |
 | `OPENAI_API_KEY` | — | OpenAI API anahtari |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant adresi |
+| `QDRANT_COLLECTION` | `rag_collection` | Qdrant collection adi |
+| `QDRANT_STARTUP_TIMEOUT` | `20` | Qdrant kalkisinda maksimum bekleme (sn) |
+| `QDRANT_RETRY_INTERVAL` | `1` | Qdrant baglanti retry araligi (sn) |
 | `RERANKER_MODEL` | `default` | Cross-encoder modeli |
 | `RERANK_FAST_MODE` | `false` | Adaptive reranking skip |
 | `RERANK_CACHE_TTL` | `600` | Cache TTL (saniye) |

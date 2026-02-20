@@ -33,7 +33,7 @@ PDF ve TXT dokumanlarinizi yukleyin, soru sorun, baglama dayali cevap alin. Hari
 === "Streamlit"
 
     ```bash
-    streamlit run streamlit/app.py
+    streamlit run streamlit/app.py --server.port 6366
     ```
     Web arayuzu. Dokuman yukleme/silme, arama ayarlari, chat.
 

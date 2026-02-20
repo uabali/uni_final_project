@@ -15,7 +15,7 @@ Bu dokümantasyon, Qwen3-8B-AWQ modelini vLLM ile nasıl kullanacağınızı aç
 **Adım 2:** `.env` dosyasına server URL ekleyin:
 
 ```ini
-VLLM_SERVER_URL=http://localhost:8000/v1
+VLLM_SERVER_URL=http://localhost:6365/v1
 ```
 
 **Adım 3:** Agent'ı çalıştırın:
@@ -45,7 +45,7 @@ python main.py
 Environment variables ile:
 
 ```bash
-export VLLM_PORT=8000
+export VLLM_PORT=6365
 export VLLM_CONTEXT_LEN=16384
 export VLLM_GPU_MEMORY=0.85
 
@@ -55,7 +55,7 @@ export VLLM_GPU_MEMORY=0.85
 Veya script parametreleri ile:
 
 ```bash
-./scripts/serve_vllm.sh --port 8001 --context 8192 --gpu-memory 0.75
+./scripts/serve_vllm.sh --port 6367 --context 8192 --gpu-memory 0.75
 ```
 
 ### LLM Parametreleri
@@ -92,16 +92,16 @@ export QDRANT_AUTO_REINDEX=smart   # true | false | smart
 
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl http://localhost:6365/health
 
 # Model listesi
-curl http://localhost:8000/v1/models
+curl http://localhost:6365/v1/models
 ```
 
 ### Test Sorgusu
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:6365/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "Qwen/Qwen3-8B-AWQ",
@@ -143,7 +143,7 @@ vLLM server'ın çalıştığından emin olun:
 ./scripts/serve_vllm.sh
 
 # Kontrol edin
-curl http://localhost:8000/health
+curl http://localhost:6365/health
 ```
 
 ### Qdrant UI/API gelmiyor (`localhost:6333`)
