@@ -21,12 +21,15 @@ import uuid
 from typing import Annotated, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
-from src.tools import ALL_TOOLS
+from src.memory import MemorySystem, inject_memory_context, update_memory_after_response
+from src.tools import ALL_TOOLS, get_all_tools
+from src.tracing import get_tracer
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
@@ -37,7 +40,15 @@ _LOCAL_STATUS_RE = re.compile(r"\[LOCAL_SEARCH_STATUS\]:\s*(\w+)")
 # ── Agent State ─────────────────────────────────────────────
 
 MAX_ITERATIONS = 3
-_TOOL_NAMES = {tool.name for tool in ALL_TOOLS}
+
+# Chat / konuşma patternleri — tool çağrısı gerektirmeyen sorgular
+_CHAT_PATTERNS = {
+    "emin misin", "emin misiniz", "tesekkurler", "tesekkur ederim", "sagol",
+    "tamam", "anladim", "peki", "oldu", "ok", "evet", "hayir",
+    "neden", "nasil yani", "ne demek", "baska", "devam et", "devam",
+    "bir daha soyle", "tekrar et", "ozetler misin", "ozetle",
+    "iyi gunler", "gorusuruz", "hosca kal", "bye",
+}
 
 SYSTEM_PROMPT = """\
 You are a RAG (Retrieval-Augmented Generation) assistant with access to three tools.
@@ -51,19 +62,21 @@ You are a RAG (Retrieval-Augmented Generation) assistant with access to three to
    - the question explicitly requires live information \
 (weather, breaking news, live scores, exchange rates, prayer times).
 3. **calculator** — Use for arithmetic or mathematical expressions.
-4. **No tool** — For simple greetings or small talk, reply directly without calling any tool.
+4. **No tool** — For simple greetings, small talk, or conversational follow-ups \
+(e.g. "emin misin", "tesekkurler", "devam et"), reply directly without calling any tool.
 
 ## ANSWERING AFTER TOOL RESULTS
 
-- **Language**: Turkish, ASCII-only (no ş, ç, ğ, ı, ö, ü).
-- **Length**: Prefer 2-4 clear sentences. Use 1-2 bullet points only when the question asks for a list or comparison; otherwise write in prose. Do not repeat the same idea or add filler (e.g. "Ozetle...", "Sonuc olarak...").
+- **Language**: Turkish (use proper Turkish characters: ş, ç, ğ, ı, ö, ü).
+- **Length**: Prefer 2-4 clear sentences. Use bullet points only when the question asks for a list or comparison; otherwise write in prose. Do not repeat the same idea or add filler.
 - **Citation**: Keep short. search_documents: "Kaynaklar: [CHUNK N] dosya.pdf p.X" (only chunks you used). web_search: "Web Kaynaklari: url1, url2" (max 3 URLs).
 - **No hallucination**: If the tool result does not contain the answer, respond exactly: "Bilgi bulunamadi."
 - **Stop**: End as soon as the answer and citation are complete. No closing summaries or sign-offs.
 
 ## IMPORTANT
 
-- Do NOT answer from training data. ALWAYS use a tool first.
+- Do NOT answer from training data. ALWAYS use a tool first for knowledge questions.
+- For conversational replies (thanks, confirmation, follow-ups), respond naturally without tools.
 - If local retrieval is insufficient, prefer web_search before saying "Bilgi bulunamadi."
 - NEVER fabricate sources. Keep technical terms as-is (API, HTTP, Scrum, etc.).
 """
@@ -75,7 +88,17 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
-def _extract_text_tool_calls(content: str) -> list[dict]:
+def _get_intent_from_messages(messages: Sequence[BaseMessage]) -> str:
+    """[INTENT]: ... system mesajindan intent'i ceker; yoksa knowledge kabul edilir."""
+    for m in messages:
+        if isinstance(m, SystemMessage) and m.content.startswith("[INTENT]:"):
+            _, _, rest = m.content.partition(":")
+            intent = (rest or "").strip()
+            return intent or "knowledge"
+    return "knowledge"
+
+
+def _extract_text_tool_calls(content: str, tool_names: set) -> list[dict]:
     """vLLM parser kaçırırsa text içinden tool_call çıkarır."""
     if not content:
         return []
@@ -95,7 +118,7 @@ def _extract_text_tool_calls(content: str) -> list[dict]:
                 args = json.loads(args)
             except Exception:
                 args = {"raw": args}
-        if name in _TOOL_NAMES and isinstance(args, dict):
+        if name in tool_names and isinstance(args, dict):
             calls.append(
                 {
                     "name": name,
@@ -110,7 +133,7 @@ def _extract_text_tool_calls(content: str) -> list[dict]:
 
     # Format 2: web_search + JSON args (iki satır formatı)
     lines = [line.strip() for line in content.strip().splitlines() if line.strip()]
-    if lines and lines[0] in _TOOL_NAMES and len(lines) > 1:
+    if lines and lines[0] in tool_names and len(lines) > 1:
         try:
             args = json.loads("\n".join(lines[1:]))
             if isinstance(args, dict):
@@ -170,12 +193,21 @@ def _is_pure_math(query: str) -> str | None:
     return None
 
 
+def _is_chat_query(query: str) -> bool:
+    """Konuşma/chat sorusu mu kontrol eder."""
+    q = query.strip().lower()
+    return q in _CHAT_PATTERNS
+
+
 def _build_forced_tool_call(query: str) -> dict | None:
     q = (query or "").strip()
     if not q:
         return None
 
-    if q.lower() in {"merhaba", "selam", "hello", "hi"}:
+    ql = q.lower()
+
+    # Selamlama veya chat patternleri → tool çağırma
+    if ql in {"merhaba", "selam", "hello", "hi"} or ql in _CHAT_PATTERNS:
         return None
 
     if _is_live_info_query(q):
@@ -231,33 +263,137 @@ def _build_fast_web_answer(tool_output: str) -> str | None:
 # ── Graph Builder ───────────────────────────────────────────
 
 
-def build_agent_graph(llm):
+def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | None = None):
     """
     Verilen LLM'i ve tool listesini kullanarak derlenmiş bir LangGraph
     ReAct agent döndürür.
 
     Args:
         llm: Tool-calling destekleyen LangChain LLM (bind_tools uyumlu).
+        tools: Kullanılacak tool listesi. None ise get_all_tools() (local + MCP).
 
     Returns:
         CompiledGraph: .invoke() veya .stream() ile çalıştırılabilir graph.
     """
-    llm_with_tools = llm.bind_tools(ALL_TOOLS)
+    tool_list = tools if tools is not None else get_all_tools()
+    _tool_names = {t.name for t in tool_list}
+    llm_with_tools = llm.bind_tools(tool_list)
 
-    # ── Node: agent (Reason) ────────────────────────────────
-    def agent_node(state: AgentState) -> dict:
+    # ── Entry Node: intent classifier / initial routing ─────
+    tracer = get_tracer()
+
+    def entry_node(state: AgentState) -> dict:
+        # Su anda intent sonucu sadece metadata olarak tutuluyor; ileride
+        # Memory / RAG node'larina routing icin kullanilabilir.
+        messages = list(state["messages"])
+        if not messages:
+            return {"messages": []}
+        last = messages[-1]
+        if isinstance(last, HumanMessage):
+            intent = "knowledge"
+            q = last.content.strip().lower()
+            if q in {"merhaba", "selam", "hello", "hi"}:
+                intent = "greeting"
+            elif q in _CHAT_PATTERNS:
+                intent = "chat"
+            elif _is_pure_math(q):
+                intent = "math"
+            elif _is_live_info_query(q):
+                intent = "live_info"
+            # Intent bilgisini SystemMessage icine encode ederek tasiyoruz.
+            intent_system = SystemMessage(content=f"[INTENT]: {intent}")
+            result = {"messages": [intent_system, last]}
+            tracer.trace_node_end("entry", {"intent": intent})
+            return result
+        return {"messages": messages}
+
+    # ── RAG Node: local retrieval augmentation ───────────────
+    def rag_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+        # Memory sistemi varsa, hafiza baglamini system prompt olarak enjekte et.
+        if memory is None:
+            return {"messages": list(state["messages"])}
+
+        messages = list(state["messages"])
+        user_query = _get_latest_user_query(messages)
+        configurable = (config or {}).get("configurable", {}) or {}
+        session_id = configurable.get("session_id") or os.getenv("MEMORY_SESSION_ID", "cli-session")
+        entity_id = configurable.get("entity_id") or os.getenv("MEMORY_ENTITY_ID")
+        tracer.trace_node_start(
+            "memory",
+            {"session_id": session_id, "entity_id": entity_id, "query": user_query},
+        )
+        enriched = inject_memory_context(
+            memory,
+            session_id=session_id,
+            entity_id=entity_id,
+            user_query=user_query,
+            messages=messages,
+        )
+        tracer.trace_node_end("memory", {"injected_messages": len(enriched)})
+        return {"messages": list(enriched)}
+
+    # ── Chat Node: saf konusma / greeting ─────────────────────
+    def chat_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+        """
+        Intent'i greeting/chat olan durumlarda RAG ve tool'lar ile ugrasmak yerine
+        dogrudan LLM'den kisa bir cevap aliriz.
+        PDF: Chat cevabi da memory'e yazilmalidir.
+        """
         messages = list(state["messages"])
 
-        if not messages or not isinstance(messages[0], SystemMessage):
+        has_system_prompt = any(
+            isinstance(m, SystemMessage) and "RAG" in m.content for m in messages
+        )
+        if not has_system_prompt:
+            messages.insert(0, SystemMessage(content=SYSTEM_PROMPT))
+
+        tracer.trace_node_start("chat", {"message_count": len(messages)})
+        response = llm.invoke(
+            messages,
+            config={
+                "run_name": "agent_chat_turn",
+                "tags": ["agent", "chat"],
+                "metadata": {"message_count": len(messages)},
+            },
+        )
+        tracer.trace_node_end("chat", {})
+
+        # Memory'e yaz (PDF: Response Node benzeri)
+        if memory is not None:
+            configurable = (config or {}).get("configurable", {}) or {}
+            session_id = configurable.get("session_id") or os.getenv("MEMORY_SESSION_ID", "cli-session")
+            entity_id = configurable.get("entity_id") or os.getenv("MEMORY_ENTITY_ID")
+            messages_with_response = list(messages) + [response]
+            update_memory_after_response(
+                memory,
+                session_id=session_id,
+                entity_id=entity_id,
+                messages=messages_with_response,
+                llm=llm,
+            )
+
+        return {"messages": [response]}
+
+    # ── ReAct Agent Node: Reason ────────────────────────────
+    def react_agent_node(state: AgentState) -> dict:
+        messages = list(state["messages"])
+
+        has_system_prompt = any(
+            isinstance(m, SystemMessage) and "RAG" in m.content
+            for m in messages
+        )
+        if not has_system_prompt:
             messages.insert(0, SystemMessage(content=SYSTEM_PROMPT))
 
         # Ilk adimda deterministic tool secimi: RAG oncelikli ve daha stabil.
+        has_tool_calls = any(getattr(m, "tool_calls", None) for m in messages)
+        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
         if (
-            len(messages) == 2
-            and isinstance(messages[1], HumanMessage)
-            and not any(getattr(m, "tool_calls", None) for m in messages)
+            not has_tool_calls
+            and len(human_messages) == 1
+            and not any(isinstance(m, ToolMessage) for m in messages)
         ):
-            forced_call = _build_forced_tool_call(messages[1].content)
+            forced_call = _build_forced_tool_call(human_messages[0].content)
             if forced_call is not None:
                 return {
                     "messages": [
@@ -315,29 +451,33 @@ def build_agent_graph(llm):
             if fast_answer:
                 return {"messages": [AIMessage(content=fast_answer)]}
 
+        tracer.trace_node_start("react_agent", {"message_count": len(messages)})
+
         response = llm_with_tools.invoke(
             messages,
             config={
                 "run_name": "agent_reason_step",
                 "tags": ["agent", "reason"],
-                "metadata": {"message_count": len(messages), "tool_count": len(ALL_TOOLS)},
+                "metadata": {"message_count": len(messages), "tool_count": len(tool_list)},
             },
         )
+
+        tracer.trace_node_end("react_agent", {"has_tool_calls": bool(getattr(response, "tool_calls", None))})
 
         if response.content:
             response.content = _THINK_RE.sub("", response.content).strip()
 
         if not getattr(response, "tool_calls", None):
-            parsed_calls = _extract_text_tool_calls(response.content or "")
+            parsed_calls = _extract_text_tool_calls(response.content or "", _tool_names)
             if parsed_calls:
                 response = AIMessage(content="", tool_calls=parsed_calls)
 
         return {"messages": [response]}
 
     # ── Node: tools (Act) ───────────────────────────────────
-    tool_node = ToolNode(tools=ALL_TOOLS)
+    tool_node = ToolNode(tools=tool_list)
 
-    # ── Router (Observe → Repeat or End) ────────────────────
+    # ── Router: decide next node (tools / response / end) ───
     def should_continue(state: AgentState) -> str:
         last = state["messages"][-1]
 
@@ -346,25 +486,77 @@ def build_agent_graph(llm):
                 1 for m in state["messages"] if hasattr(m, "tool_calls") and m.tool_calls
             )
             if tool_call_count >= MAX_ITERATIONS:
-                return "end"
+                return "response"
             return "tools"
 
-        return "end"
+        # Tool cagrisi yoksa artik Response Node'a gec.
+        return "response"
+
+    # ── Response Node: final synthesis (LLM or fast web) ────
+    def response_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+        messages = list(state["messages"])
+        if memory is not None:
+            configurable = (config or {}).get("configurable", {}) or {}
+            session_id = configurable.get("session_id") or os.getenv("MEMORY_SESSION_ID", "cli-session")
+            entity_id = configurable.get("entity_id") or os.getenv("MEMORY_ENTITY_ID")
+            update_memory_after_response(
+                memory,
+                session_id=session_id,
+                entity_id=entity_id,
+                messages=messages,
+                llm=llm,
+            )
+            tracer.trace_node_end("response", {"session_id": session_id, "message_count": len(messages)})
+        return {"messages": []}  # Yeni mesaj yok; side-effect (memory) zaten yapildi.
+
+    # ── Router: intent → hangi ana path? ────────────────────
+    def route_after_entry(state: AgentState) -> str:
+        """
+        entry node'un ekledigi [INTENT] system mesajina gore hangi node'a
+        gidecegimize karar verir.
+
+        - greeting/chat  → chat
+        - math/live_info → react_agent (dogrudan tool + LLM, RAG/memory yok)
+        - knowledge      → rag (RAG + memory, sonra react_agent)
+        """
+        messages = list(state["messages"])
+        intent = _get_intent_from_messages(messages)
+
+        if intent in {"greeting", "chat"}:
+            return "chat"
+        if intent in {"math", "live_info"}:
+            return "react_agent"
+        # default: knowledge
+        return "rag"
 
     # ── Graph wiring ────────────────────────────────────────
     graph = StateGraph(AgentState)
 
-    graph.add_node("agent", agent_node)
+    graph.add_node("entry", entry_node)
+    graph.add_node("rag", rag_node)
+    graph.add_node("chat", chat_node)
+    graph.add_node("react_agent", react_agent_node)
     graph.add_node("tools", tool_node)
+    graph.add_node("response", response_node)
 
-    graph.set_entry_point("agent")
+    graph.set_entry_point("entry")
+
+    # Intent temelli ilk branching
+    graph.add_conditional_edges(
+        "entry",
+        route_after_entry,
+        {"chat": "chat", "react_agent": "react_agent", "rag": "rag"},
+    )
+    graph.add_edge("rag", "react_agent")
 
     graph.add_conditional_edges(
-        "agent",
+        "react_agent",
         should_continue,
-        {"tools": "tools", "end": END},
+        {"tools": "tools", "response": "response"},
     )
 
-    graph.add_edge("tools", "agent")
+    graph.add_edge("tools", "react_agent")
+    graph.add_edge("response", END)
+    graph.add_edge("chat", END)
 
     return graph.compile()

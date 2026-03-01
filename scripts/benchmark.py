@@ -15,7 +15,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -27,19 +27,13 @@ from langchain_core.output_parsers import StrOutputParser
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.agent import build_agent_graph
-from src.loader import load_documents
-from src.llm import create_llm
+from src.app_orchestrator import RagApp, RagAppConfig, build_rag_app
 from src.prompting import build_prompt, format_docs
-from src.reranker import create_reranker
-from src.retriever import build_bm25_retriever, create_retriever
-from src.splitter import split_documents
-from src.tools import register_rag_components
-from src.vectorstore import create_embeddings, create_vectorstore
+from src.retriever import create_retriever
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _percentile(values: List[float], p: float) -> Optional[float]:
@@ -136,7 +130,8 @@ def _get_llm(_backend: str):
 
     backend parametresi sadece CLI uyumluluğu için korunur.
     """
-    return create_llm()
+    app = build_rag_app(RagAppConfig())
+    return app.llm
 
 
 def _get_llm_name(llm) -> str:
@@ -167,43 +162,10 @@ def build_pipeline(
     fast_mode: bool,
     backend: str,
 ):
-    embeddings = create_embeddings()
-    documents = load_documents()
-
-    if documents:
-        if split_method == "semantic":
-            docs = split_documents(documents, method="semantic", embeddings=embeddings)
-        else:
-            docs = split_documents(
-                documents,
-                method="recursive",
-                chunk_size=600,
-                chunk_overlap=100,
-            )
-    else:
-        docs = []
-
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333").strip()
-    qdrant_collection = os.getenv("QDRANT_COLLECTION", "rag_collection").strip()
-    vectorstore = create_vectorstore(
-        docs,
-        embeddings,
-        url=qdrant_url,
-        collection_name=qdrant_collection,
-    )
-    bm25_retriever = build_bm25_retriever(docs) if docs else None
-
-    reranker = None
-    if use_rerank:
-        reranker = create_reranker(device="cuda")
-
-    llm = _get_llm(backend)
-    register_rag_components(
-        vectorstore=vectorstore,
-        bm25_retriever=bm25_retriever,
-        reranker=reranker,
-    )
-    agent = build_agent_graph(llm)
+    app_config = RagAppConfig()
+    app: RagApp = build_rag_app(app_config)
+    llm = app.llm
+    agent = app.agent
     prompt = build_prompt()
     chain = prompt | llm | StrOutputParser()
 
@@ -211,10 +173,10 @@ def build_pipeline(
         "llm": llm,
         "agent": agent,
         "chain": chain,
-        "docs": docs,
-        "vectorstore": vectorstore,
-        "bm25_retriever": bm25_retriever,
-        "reranker": reranker,
+        "docs": app.docs,
+        "vectorstore": app.vectorstore,
+        "bm25_retriever": app.bm25_retriever,
+        "reranker": app.reranker,
         "use_multi_query": use_multi_query,
         "use_rerank": use_rerank,
         "fast_mode": fast_mode,
@@ -421,7 +383,9 @@ def run_benchmark(args):
 
     run_id = str(uuid.uuid4())
     output_path = args.output
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
     results = []
     base_run_config = {

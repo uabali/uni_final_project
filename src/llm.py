@@ -1,37 +1,24 @@
 """
-LLM Backend Modülü — Qwen3-8B-AWQ with vLLM
+LLM Backend Modülü — vLLM uzerinden Qwen (veya baska modeller)
 
 Agent (tool-calling) için server mode ZORUNLUDUR:
-- vLLM ayrı bir process olarak serve edilmeli (scripts/serve_vllm.sh)
+- vLLM ayrı bir process olarak serve edilmeli (scripts/serve_vllm.sh veya docker-compose)
 - ChatOpenAI ile OpenAI-compatible API endpoint'e bağlanır (bind_tools destekler)
 
 Embedded mode (VLLM wrapper) desteklenmez — BaseLLM bind_tools sağlamaz.
 """
 
-import os
-
 from langchain_openai import ChatOpenAI
 
+from src.config import load_model_config
 
-def create_llm(
-    temperature: float = 0.7,
-    max_new_tokens: int = 256,
-    top_p: float = 0.95,
-    frequency_penalty: float = 0.0,
-    presence_penalty: float = 0.85,
-):
+
+def create_llm():
     """
-    Qwen3-8B-AWQ modelini vLLM server üzerinden ChatOpenAI ile oluşturur.
+    Ortak model config'ini kullanarak ChatOpenAI instance'i olusturur.
 
-    VLLM_SERVER_URL env variable ZORUNLUDUR (örn: http://localhost:6365/v1).
-    Önce ./scripts/serve_vllm.sh ile vLLM server'ı başlatın.
-
-    Args:
-        temperature: Sampling temperature (Qwen3 non-thinking için 0.7 önerilir)
-        max_new_tokens: Maksimum output token (varsayilan 256; hiz/kalite dengesi)
-        top_p: Nucleus sampling (Qwen3 için 0.95 önerilir)
-        frequency_penalty: Token frequency penalty
-        presence_penalty: Tekrari azaltir (0.85)
+    - Model adi VLLM_MODEL env degiskeninden gelir (varsayilan: Qwen/Qwen3-8B-AWQ).
+    - vLLM server URL'si VLLM_SERVER_URL ile verilir (ornegin: http://localhost:6365/v1).
 
     Returns:
         ChatOpenAI: bind_tools destekleyen chat model instance
@@ -39,33 +26,28 @@ def create_llm(
     Raises:
         ValueError: VLLM_SERVER_URL tanımlı değilse
     """
-    vllm_server_url = os.getenv("VLLM_SERVER_URL", "").strip()
+    cfg = load_model_config()
 
-    if not vllm_server_url:
+    if not cfg.server_url:
         raise ValueError(
             "Agent (tool-calling) icin vLLM server mode zorunludur.\n"
-            "1. ./scripts/serve_vllm.sh ile vLLM server'i baslatin\n"
+            "1. ./scripts/serve_vllm.sh veya docker-compose ile vLLM server'i baslatin\n"
             "2. .env dosyasina VLLM_SERVER_URL=http://localhost:6365/v1 ekleyin"
         )
 
-    # Env override'lar: üretim ortamında hızlı ayar değişimi için.
-    resolved_temperature = float(os.getenv("LLM_TEMPERATURE", str(temperature)))
-    resolved_max_tokens = int(os.getenv("LLM_MAX_TOKENS", str(max_new_tokens)))
-    resolved_top_p = float(os.getenv("LLM_TOP_P", str(top_p)))
-    enable_thinking = os.getenv("LLM_ENABLE_THINKING", "false").lower() == "true"
-
     llm = ChatOpenAI(
-        model="Qwen/Qwen3-8B-AWQ",
-        base_url=vllm_server_url,
+        model=cfg.name,
+        base_url=cfg.server_url,
         api_key="dummy",
-        temperature=resolved_temperature,
-        max_tokens=resolved_max_tokens,
-        top_p=resolved_top_p,
-        frequency_penalty=frequency_penalty,
-        presence_penalty=presence_penalty,
+        temperature=cfg.temperature,
+        max_tokens=cfg.max_new_tokens,
+        top_p=cfg.top_p,
+        frequency_penalty=cfg.frequency_penalty,
+        presence_penalty=cfg.presence_penalty,
         extra_body={
-            "chat_template_kwargs": {"enable_thinking": enable_thinking},
+            "chat_template_kwargs": {"enable_thinking": cfg.enable_thinking},
         },
     )
 
     return llm
+

@@ -8,22 +8,13 @@ Başlatma sırası:
   4. Kullanıcıdan sorgu alıp agent'a yönlendirir; agent kendi tool seçimini yapar.
 """
 
-import os
 import re
 import sys
 import time
 
 from dotenv import load_dotenv
 from langchain_core.messages import ToolMessage
-
-from src import splitter
-from src.agent import build_agent_graph
-from src.llm import create_llm
-from src.loader import load_documents
-from src.reranker import create_reranker
-from src.retriever import build_bm25_retriever
-from src.tools import register_rag_components
-from src.vectorstore import create_embeddings, create_vectorstore
+from src.app_orchestrator import RagApp, RagAppConfig, build_rag_app
 
 
 def _classify_query(query: str) -> str:
@@ -45,68 +36,14 @@ def main():
     load_dotenv()
     print("--- Agentic RAG Pipeline Initializing ---")
 
-    # ── 1. Embedding + docs + vectorstore ───────────────────
-    embeddings = create_embeddings()
-
-    documents = load_documents()
-    if documents:
-        chunk_size = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
-        chunk_overlap = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
-        docs = splitter.split_documents(
-            documents,
-            method="recursive",
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-        print(f"Documents split into {len(docs)} chunks.")
-    else:
-        print("Warning: No documents found. Continuing with empty vectorstore.")
-        docs = []
-
     try:
-        qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333").strip()
-        qdrant_collection = os.getenv("QDRANT_COLLECTION", "rag_collection").strip()
-        vectorstore = create_vectorstore(
-            docs,
-            embeddings,
-            url=qdrant_url,
-            collection_name=qdrant_collection,
-        )
-        print(f"Qdrant: {qdrant_url} | Collection: {qdrant_collection}")
+        app_config = RagAppConfig()
+        rag_app: RagApp = build_rag_app(app_config)
     except Exception as exc:
-        print(f"Error during vectorstore initialization: {exc}")
+        print(f"Error during RAG app initialization: {exc}")
         sys.exit(1)
 
-    # ── 2. BM25 + Reranker ──────────────────────────────────
-    bm25_retriever = None
-    if docs:
-        try:
-            bm25_retriever = build_bm25_retriever(docs)
-            print("BM25 retriever built.")
-        except Exception as exc:
-            print(f"BM25 build failed (hybrid disabled): {exc}")
-
-    reranker = None
-    try:
-        reranker = create_reranker(device="cuda")
-        print("Reranker loaded.")
-    except Exception as exc:
-        print(f"Reranker load failed (reranking disabled): {exc}")
-
-    # ── 3. Tool registry'ye kaydet ──────────────────────────
-    register_rag_components(
-        vectorstore=vectorstore,
-        bm25_retriever=bm25_retriever,
-        reranker=reranker,
-    )
-    print("RAG components registered as agent tools.")
-
-    # ── 4. LLM + Agent graph ────────────────────────────────
-    llm = create_llm()
-    vllm_server_url = os.getenv("VLLM_SERVER_URL", "").strip()
-    print(f"LLM backend: Qwen3-8B-AWQ (vLLM server: {vllm_server_url})")
-
-    agent = build_agent_graph(llm)
+    agent = rag_app.agent
     print("\n--- Agentic RAG Ready (ReAct Pattern) ---")
     print("Tools: search_documents | web_search | calculator")
     print("(Type 'exit' to quit)\n")

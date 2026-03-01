@@ -1,0 +1,52 @@
+# LiteLLM Proxy Configuration
+# architecture.pdf: LLM Router — tüm provider'ları tek OpenAI-compat interface'e çevirir
+# Docker network: vllm, orchestrator, litellm-proxy aynı ağda
+
+model_list:
+  # Local vLLM (Qwen3-8B-AWQ) — varsayılan, API key gerekmez
+  - model_name: vllm-qwen
+    litellm_params:
+      model: openai/Qwen/Qwen3-8B-AWQ
+      api_base: http://vllm:8080/v1
+      api_key: "none"
+
+  # OpenAI — OPENAI_API_KEY env ile
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Anthropic Claude — ANTHROPIC_API_KEY env ile
+  - model_name: claude-3-5-sonnet
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20240620
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # OpenRouter (100+ model) — OPENROUTER_API_KEY env ile
+  - model_name: deepseek-coder
+    litellm_params:
+      model: openrouter/deepseek/deepseek-coder
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # Google Gemini — GEMINI_API_KEY env ile
+  - model_name: gemini-1.5-pro
+    litellm_params:
+      model: gemini/gemini-1.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+  # Ollama (local) — OLLAMA_API_BASE env ile, örn. http://host.docker.internal:11434
+  - model_name: ollama-llama3
+    litellm_params:
+      model: ollama/llama3
+      api_base: os.environ/OLLAMA_API_BASE
+
+litellm_settings:
+  drop_params: true
+
+# general_settings:
+#   master_key: os.environ/LITELLM_MASTER_KEY  # opsiyonel

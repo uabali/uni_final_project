@@ -10,8 +10,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -33,6 +33,7 @@ env/
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # Local Python version (pyenv, etc.)
 .python-version
@@ -53,6 +54,9 @@ Thumbs.db
 qdrant_storage/
 chroma_db/
 .rag_cache/
+
+# Docker volumes (runtime data)
+pg_data/
 
 # Data files (user uploads)
 data/
@@ -85,3 +89,10 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Node.js / Frontend
+node_modules/
+frontend/.next/
+frontend/node_modules/
+tsconfig.tsbuildinfo
+frontend/tsconfig.tsbuildinfo

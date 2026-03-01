@@ -72,7 +72,7 @@ def _is_simple_query(query: str) -> bool:
 
 
 def _tokenize_query_terms(query: str) -> list[str]:
-    terms = re.findall(r"[a-zA-Z0-9]+", query.lower())
+    terms = re.findall(r"\w+", query.lower())
     return [t for t in terms if len(t) >= 3 and t not in _QUERY_STOPWORDS]
 
 
@@ -309,16 +309,109 @@ def calculator(expression: str) -> str:
     """Evaluate a mathematical expression and return the numeric result.
     Examples: '2 + 2', '15 * 3.14', '(100 / 4) ** 2'.
     Only arithmetic operators (+, -, *, /, **) and parentheses are allowed."""
+    import ast
 
-    allowed = set("0123456789+-*/.() eE")
+    allowed = set("0123456789+-*/.() ")
     if not all(ch in allowed for ch in expression):
         return f"Security error: expression contains disallowed characters: {expression}"
 
     try:
-        result = eval(expression, {"__builtins__": {}}, {})  # noqa: S307
+        tree = ast.parse(expression, mode="eval")
+        # Yalnızca sabitler ve temel aritmetik operatörlere izin ver
+        _SAFE_NODES = (
+            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
+            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
+            ast.FloorDiv, ast.Mod, ast.USub, ast.UAdd,
+        )
+        for node in ast.walk(tree):
+            if not isinstance(node, _SAFE_NODES):
+                return f"Security error: disallowed expression node: {type(node).__name__}"
+        result = eval(compile(tree, "<calc>", "eval"), {"__builtins__": {}}, {})  # noqa: S307
         return str(result)
+    except SyntaxError:
+        return f"Syntax error in expression: {expression}"
     except Exception as exc:
         return f"Calculation error: {exc}"
+
+
+# ── MCP Tool Wrappers (architecture.pdf) ────────────────────
+
+_MCP_INVOKER = None
+
+
+def set_mcp_invoker(invoker):
+    """MCP HybridToolInvoker'ı kaydeder (app başlangıcında)."""
+    global _MCP_INVOKER
+    _MCP_INVOKER = invoker
+
+
+def _create_mcp_tools():
+    """MCP etkinse LangChain tool listesi döner."""
+    from langchain_core.tools import StructuredTool
+    from pydantic import BaseModel, Field
+
+    if _MCP_INVOKER is None:
+        return []
+
+    def _make_invoker(tool_name: str):
+        inv = _MCP_INVOKER  # closure capture
+
+        def _invoke(**kwargs):
+            try:
+                result = inv.invoke(tool_name, kwargs)
+                return str(result) if result is not None else ""
+            except Exception as exc:
+                return f"MCP tool hatası ({tool_name}): {exc}"
+        return _invoke
+
+    class ReadFileArgs(BaseModel):
+        path: str = Field(description="Dosya yolu (/data volume'dan)")
+
+    class ListDirArgs(BaseModel):
+        path: str = Field(default=".", description="Listelenecek dizin")
+
+    class WriteFileArgs(BaseModel):
+        path: str = Field(description="Dosya yolu")
+        content: str = Field(description="Yazılacak içerik")
+
+    class ExecutePythonArgs(BaseModel):
+        code: str = Field(description="Çalıştırılacak Python kodu")
+
+    class RunBashArgs(BaseModel):
+        command: str = Field(description="Çalıştırılacak shell komutu")
+
+    class QueryPostgresArgs(BaseModel):
+        query: str = Field(description="Read-only SQL sorgusu")
+
+    class MemorySearchArgs(BaseModel):
+        query: str = Field(description="Hafızada aranacak sorgu")
+
+    specs = [
+        ("read_file", "Dosya içeriğini oku (/data volume).", ReadFileArgs),
+        ("list_directory", "Dizindeki dosyaları listele.", ListDirArgs),
+        ("write_file", "Dosyaya içerik yaz.", WriteFileArgs),
+        ("execute_python", "Python kodu çalıştır (sandbox, 15s timeout).", ExecutePythonArgs),
+        ("run_bash", "Shell komutu çalıştır (kısıtlı).", RunBashArgs),
+        ("query_postgres", "PostgreSQL'de read-only SQL çalıştır.", QueryPostgresArgs),
+        ("memory_search", "Agent hafızasında semantik arama.", MemorySearchArgs),
+    ]
+
+    return [
+        StructuredTool.from_function(
+            func=_make_invoker(name),
+            name=name,
+            description=desc,
+            args_schema=schema,
+        )
+        for name, desc, schema in specs
+    ]
+
+
+def get_all_tools():
+    """Local + MCP tool'ların birleşik listesi."""
+    base = [search_documents, web_search, calculator]
+    mcp = _create_mcp_tools()
+    return base + mcp
 
 
 # ── Tool registry ──────────────────────────────────────────

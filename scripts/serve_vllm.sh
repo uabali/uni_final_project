@@ -15,10 +15,13 @@
 set -e
 
 # ── Varsayılan Ayarlar ────────────────────────────────────────
-MODEL="Qwen/Qwen3-8B-AWQ"
+# MODEL, hem Python tarafindaki ChatOpenAI client'inin hem de
+# vLLM server'in ayni modeli kullanmasi icin VLLM_MODEL env ile
+# senkronize edilir. ENV tanimli degilse Qwen3-8B-AWQ varsayilanidir.
+MODEL="${VLLM_MODEL:-Qwen/Qwen3-8B-AWQ}"
 PORT="${VLLM_PORT:-6365}"
 CONTEXT_LEN="${VLLM_CONTEXT_LEN:-4096}"
-GPU_MEMORY="${VLLM_GPU_MEMORY:-0.90}"
+GPU_MEMORY="${VLLM_GPU_MEMORY:-0.85}"
 
 # ── Argüman Parsing ───────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -48,6 +51,7 @@ while [[ $# -gt 0 ]]; do
             echo "  VLLM_PORT            Server port"
             echo "  VLLM_CONTEXT_LEN     Max context length"
             echo "  VLLM_GPU_MEMORY      GPU memory utilization"
+            echo "  VLLM_MODEL           Hugging Face model name (Python client ile paylasilir)"
             echo ""
             echo "Note: Qwen3 reasoning mode varsayılan olarak aktif."
             echo "      Kapatmak için API çağrılarında enable_thinking=False kullanın."
@@ -108,7 +112,9 @@ VLLM_CMD="vllm serve $MODEL \
     --trust-remote-code \
     --enable-auto-tool-choice \
     --tool-call-parser hermes \
-    --enable-prefix-caching"
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --disable-log-requests"
 
 # Server'ı başlat
 exec $VLLM_CMD

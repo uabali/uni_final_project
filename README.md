@@ -1,158 +1,175 @@
-# RAG Project
+# Agentic RAG Pipeline
 
-This repo contains a Retrieval-Augmented Generation (RAG) pipeline with:
-- PDF/TXT ingestion + splitting
-- Vector search (Qdrant) + optional BM25
-- Optional reranker
-- LLM backend: single local vLLM model (Meta-Llama-3.1-8B-Instruct-AWQ-INT4)
-- Optional LangSmith tracing
-- A separate benchmark runner
+> LangGraph ReAct agent + vLLM + Qdrant tabanlı akıllı doküman soru-cevap sistemi.
+
+## Özellikler
+
+- **Agentic RAG**: LangGraph StateGraph ile ReAct pattern — agent kendi tool seçimini yapar
+- **Tool Calling**: `search_documents` (yerel), `web_search` (Tavily), `calculator`
+- **Hybrid Retrieval**: Vektör + BM25 (RRF fusion), cross-encoder reranking
+- **Multi-Provider LLM**: vLLM (lokal), OpenAI, LiteLLM (100+ provider) — runtime değiştirilebilir
+- **Multi-Layer Memory**: Redis (short-term) + Qdrant (episodic) + Postgres (summary)
+- **Incremental Ingestion**: Hash-based dedup ile doküman ekleme/güncelleme
+- **FastAPI Gateway**: SSE streaming + senkron chat + dosya yükleme
+- **Next.js Frontend**: Modern chat arayüzü (RAG toggle, markdown render, source chips)
+- **Benchmark Runner**: Latency, throughput ve GPU ölçümleri
+- **MCP Desteği**: Model Context Protocol ile harici tool entegrasyonu (opsiyonel)
 
 ---
 
-## 1) Quick Start
+## Mimari
 
-### Requirements
+```
+┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
+│  Frontend    │───▶│  FastAPI API  │───▶│  LangGraph Agent│
+│  (Next.js)   │    │  Gateway      │    │  (ReAct Pattern) │
+└─────────────┘    └──────────────┘    └────────┬────────┘
+                                                │
+                   ┌────────────────────────────┼────────────────┐
+                   │                            │                │
+            ┌──────▼──────┐  ┌─────────▼────────┐  ┌───────▼───────┐
+            │ search_docs  │  │   web_search      │  │  calculator    │
+            │ (Qdrant+BM25)│  │   (Tavily)        │  │  (AST eval)    │
+            └──────────────┘  └──────────────────┘  └───────────────┘
+                   │
+       ┌───────────┼───────────┐
+       │           │           │
+  ┌────▼────┐ ┌────▼────┐ ┌───▼────┐
+  │ Redis   │ │ Qdrant  │ │Postgres│
+  │ Memory  │ │ Vectors │ │Summary │
+  └─────────┘ └─────────┘ └────────┘
+```
+
+---
+
+## Hızlı Başlangıç
+
+### Gereksinimler
+
 - Python 3.11+
-- Qdrant running on `http://localhost:6333`
+- NVIDIA GPU (CUDA destekli, en az 12GB VRAM önerilir)
+- Docker & Docker Compose
 
-### Install deps
-Using uv:
-```
+### 1. Bağımlılıkları Kur
+
+```bash
+# uv ile (önerilen)
 uv sync
-```
-Or pip (from `pyproject.toml`):
-```
+
+# veya pip ile
 pip install .
 ```
 
-### Start Qdrant (Docker)
-Recommended (compose):
-```
-docker compose up -d qdrant
-```
+### 2. Servisleri Başlat
 
-Alternative (single `docker run`):
-```
-docker run -d -p 6333:6333 -p 6334:6334 \
-  -v $(pwd)/qdrant_storage:/qdrant/storage \
-  --name qdrant \
-  qdrant/qdrant
+```bash
+# Qdrant, Redis, Postgres
+docker compose up -d qdrant redis postgres
+
+# vLLM server (ayrı terminal)
+./scripts/serve_vllm.sh
 ```
 
----
+### 3. Ortam Değişkenlerini Ayarla
 
-## 2) Environment (.env)
-
-Keep API keys out of code. Put them in `.env`:
-```
-OPENAI_API_KEY=sk-...
-
-LANGCHAIN_API_KEY=lsv2_...
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_PROJECT=rag-dev
-
-# LLM backend is now fixed to a single local vLLM model (Meta-Llama-3.1-8B-Instruct-AWQ-INT4),
-# so this variable is ignored if set.
-# LLM_BACKEND=openai
+```bash
+cp .env.example .env
+# .env dosyasını düzenleyerek API anahtarlarınızı ekleyin
 ```
 
-Optional reranker settings:
-```
-RERANKER_MODEL=default   # default | fast | <hf model>
-RERANK_FAST_MODE=false
-RERANK_CACHE_TTL=600
-RERANK_CACHE_SIZE=100
-```
+### 4. Çalıştır
 
----
-
-## 3) Run the App (normal usage)
-
-```
+```bash
+# CLI modu
 python main.py
-```
 
-This is the interactive RAG app. Use this for everyday work.
-If you are NOT benchmarking, you only need `main.py`.
+# API Gateway
+uvicorn api.app:app --host 0.0.0.0 --port 8000
 
----
-
-## 4) Benchmark Runner
-
-`scripts/benchmark.py` runs the same pipeline over a dataset and writes:
-- `logs/benchmark_results.jsonl`
-- `logs/benchmark_results_summary.json`
-
-### Example: vLLM (local, fixed backend)
-```
-python scripts/benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5
-```
-
-If you want TTFT (time-to-first-token):
-```
-python scripts/benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --stream
-```
-
-GPU comparison example:
-```
-CUDA_VISIBLE_DEVICES=0 python scripts/benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --gpu-label "GPU0"
-CUDA_VISIBLE_DEVICES=1 python scripts/benchmark.py --dataset data/benchmark.jsonl --runs 3 --warmup 5 --gpu-label "GPU1"
-```
-
-Important:
-- Do NOT run `main.py` while benchmarking (resource conflicts).
-- Benchmark needs a dataset (`input` or `question` column).
-
----
-
-## 5) LangSmith with Local LLM (vLLM)
-
-LangSmith works as long as you use LangChain and have internet access.
-Local or cloud LLM does not matter.
-
-Set:
-```
-LANGCHAIN_API_KEY=...
-LANGCHAIN_TRACING_V2=true
-```
-
-If you do NOT want tracing (PII, offline):
-```
-LANGCHAIN_TRACING_V2=false
+# Frontend (ayrı terminal)
+cd frontend && npm run dev
 ```
 
 ---
 
-## 6) BM25 Note
+## Ortam Değişkenleri
 
-If you see:
+Tüm konfigürasyon `.env` dosyasından okunur. Şablon için `.env.example` dosyasına bakın.
+
+| Değişken | Açıklama | Varsayılan |
+|----------|----------|-----------|
+| `VLLM_SERVER_URL` | vLLM OpenAI-compat endpoint | `http://localhost:6365/v1` |
+| `VLLM_MODEL` | vLLM'de serve edilen model | `Qwen/Qwen3-8B-AWQ` |
+| `QDRANT_URL` | Qdrant vector DB adresi | `http://localhost:6333` |
+| `REDIS_URL` | Redis memory store | `redis://localhost:6379/0` |
+| `MEMORY_ENABLED` | Multi-layer memory aktif? | `true` |
+| `RAG_RETRIEVAL_STRATEGY` | Arama stratejisi | `hybrid` |
+| `TAVILY_API_KEY` | Web arama API anahtarı | — |
+
+---
+
+## Proje Yapısı
+
 ```
-Could not import rank_bm25
-```
-make sure `rank-bm25` is installed (now in deps). Re-run:
-```
-uv sync
+├── api/app.py              # FastAPI gateway (SSE streaming, sync, ingestion)
+├── main.py                 # CLI giriş noktası
+├── src/
+│   ├── agent.py            # LangGraph ReAct agent (StateGraph)
+│   ├── app_orchestrator.py # Uygulama düzenleyicisi (pipeline build)
+│   ├── config.py           # Model/LLM konfigürasyonu
+│   ├── llm.py              # vLLM ChatOpenAI wrapper
+│   ├── llm_provider.py     # Multi-provider soyutlaması (vLLM/OpenAI/LiteLLM)
+│   ├── loader.py           # PDF/TXT doküman yükleme
+│   ├── memory.py           # Multi-layer memory (Redis/Qdrant/Postgres)
+│   ├── prompting.py        # Prompt template'leri
+│   ├── query_translation.py# Multi-query tekniği
+│   ├── reranker.py         # Cross-encoder reranking + cache
+│   ├── retriever.py        # Hybrid retrieval (BM25 + vektör)
+│   ├── splitter.py         # Doküman parçalama
+│   ├── tooling.py          # MCP + Local tool invocation
+│   ├── tools.py            # Agent tool tanımları
+│   ├── tracing.py          # Observability abstraction
+│   └── vectorstore.py      # Qdrant vektör DB yönetimi
+├── frontend/               # Next.js chat arayüzü
+├── config/                 # LiteLLM proxy yapılandırması
+├── scripts/
+│   ├── serve_vllm.sh       # vLLM server başlatma scripti
+│   ├── benchmark.py        # Performans benchmark runner
+│   └── reset_qdrant.py     # Qdrant collection sıfırlama
+├── docker-compose.yml      # Tüm servislerin orkestrasyonu
+├── Dockerfile              # Orchestrator container
+└── pyproject.toml          # Python bağımlılıkları
 ```
 
 ---
 
-## 7) Project Structure
+## Benchmark
 
-- `main.py`: interactive RAG app
-- `scripts/benchmark.py`: benchmark runner
-- `src/loader.py`: PDF/TXT loading
-- `src/splitter.py`: recursive/semantic split
-- `src/vectorstore.py`: Qdrant vector store
-- `src/retriever.py`: hybrid retrieval + rerank
-- `src/reranker.py`: cross-encoder reranking + cache
-- `src/prompting.py`: shared prompt + context formatting
+```bash
+# Agent modu (varsayılan)
+python scripts/benchmark.py --dataset benchmarks/benchmark_tr_load.jsonl --runs 3
+
+# Pipeline modu (TTFT ölçümü)
+python scripts/benchmark.py --dataset benchmarks/benchmark_tr_load.jsonl --mode pipeline --stream
+
+# Detaylı kullanım
+python scripts/benchmark.py --help
+```
 
 ---
 
-## 8) Typical Flow
+## Docker Compose (Tam Kurulum)
 
-1) Start Qdrant
-2) Run `python main.py` to confirm everything works
-3) Run `python benchmark.py ...` only when you need measurements
+```bash
+# Temel servisler (Qdrant, Redis, Postgres)
+docker compose up -d
 
+# Tüm servisler dahil (LiteLLM proxy, SearXNG)
+docker compose --profile full up -d
+```
+
+---
+
+## Lisans
+
+Bu proje kişisel/akademik kullanım içindir.

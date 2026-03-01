@@ -1,4 +1,46 @@
 services:
+  orchestrator:
+    build: .
+    container_name: rag-orchestrator
+    restart: unless-stopped
+    depends_on:
+      - vllm
+      - qdrant
+      - redis
+      - postgres
+    environment:
+      - VLLM_MODEL=Qwen/Qwen3-8B-AWQ
+      - VLLM_SERVER_URL=http://vllm:8080/v1
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - POSTGRES_URL=postgresql://rag:rag@postgres:5432/rag
+      - MEMORY_ENABLED=true
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+    working_dir: /app
+    command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vllm
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - VLLM_MODEL=Qwen/Qwen3-8B-AWQ
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+
+  # embedding: PDF'de port 8002, ancak orchestrator şu an HuggingFace BGE-m3 kullanıyor.
+  # Embedding servisi entegre edilirse bu container'ı tekrar ekleyin.
+
   qdrant:
     image: qdrant/qdrant
     container_name: qdrant
@@ -14,3 +56,51 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=rag
+      - POSTGRES_PASSWORD=rag
+      - POSTGRES_DB=rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pg_data:/var/lib/postgresql/data
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    profiles:
+      - full
+    ports:
+      - "8888:8080"
+
+  litellm-proxy:
+    image: berriai/litellm:latest
+    container_name: litellm-proxy
+    restart: unless-stopped
+    profiles:
+      - full
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./config/litellm-config.yaml:/app/litellm-config.yaml
+    command: ["--config", "/app/litellm-config.yaml"]
+
+  # mcp-server: ghcr.io/fastmcp/fastmcp registry denied. MCP opsiyonel; orchestrator local tools ile calisir.
+  # MCP eklemek icin kendi MCP server image'inizi build edin.
+
+networks:
+  default:
+    name: local-ai-stack
