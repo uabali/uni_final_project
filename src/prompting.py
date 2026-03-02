@@ -38,6 +38,9 @@ Answer style:
 - Then, ONLY IF NECESSARY, add a few short bullet points to clarify important details (still concise, no long paragraphs).
 - If the user question has multiple parts, make sure each part is answered explicitly (kisa ama aciklayici).
 - Do NOT repeat the same sentence or idea multiple times. If a fact is already stated once, do not restate it again with similar wording.
+- CITATION RULE: Put the source citation ONLY ONCE at the VERY END of the whole answer.
+  Format: "Kaynaklar: [CHUNK N] dosya.pdf p.X"
+  Do NOT write [CHUNK N] after every sentence or bullet point.
 
 How to think (do NOT write these steps in the answer):
 1) Identify if the question has multiple parts.

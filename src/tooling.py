@@ -23,6 +23,9 @@ from typing import Any, Dict, List, Optional, Protocol, Set
 from langchain_core.tools import BaseTool
 
 from .tools import ALL_TOOLS
+from .context import get_request_context
+from .policy import get_policy_engine
+from .audit import get_audit_logger
 
 logger = logging.getLogger("rag.tooling")
 
@@ -126,9 +129,20 @@ class McpToolInvoker:
         import urllib.request
         import json
 
-        # Yetkilendirme kontrolü
+        # Yetkilendirme kontrolü (statik whitelist)
         if self.allowed_tools and name not in self.allowed_tools:
             raise PermissionError(f"Tool '{name}' MCP whitelist'te değil")
+
+        # Department × MCP matrix kontrolü (PolicyEngine)
+        ctx = get_request_context()
+        policy = get_policy_engine()
+        if ctx is not None:
+            if not policy.can_call_tool(ctx.department_id, ctx.role, name):
+                raise PermissionError(
+                    f"Tool '{name}' için departman ({ctx.department_id}) yetkisi yok"
+                )
+
+        audit = get_audit_logger()
 
         try:
             url = f"{self.server_url}/tools/{name}/invoke"
@@ -140,14 +154,47 @@ class McpToolInvoker:
             with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
 
+            if audit.is_available:
+                audit.log_tool_call(
+                    context=ctx,
+                    tool_name=name,
+                    success=True,
+                    extra={"mcp_server_url": self.server_url},
+                )
+
             return result.get("result", result)
 
         except PermissionError:
+            # Policy / whitelist hataları çağırana fırlatılır, ayrıca audit log'lanır.
+            if audit.is_available:
+                audit.log_tool_call(
+                    context=ctx,
+                    tool_name=name,
+                    success=False,
+                    error="permission_denied",
+                    extra={"mcp_server_url": self.server_url},
+                )
             raise
         except TimeoutError:
+            if audit.is_available:
+                audit.log_tool_call(
+                    context=ctx,
+                    tool_name=name,
+                    success=False,
+                    error=f"timeout_{self.timeout_seconds}s",
+                    extra={"mcp_server_url": self.server_url},
+                )
             raise TimeoutError(f"MCP tool '{name}' timeout ({self.timeout_seconds}s)")
         except Exception as exc:
             logger.error(f"MCP tool invocation hatası ({name}): {exc}")
+            if audit.is_available:
+                audit.log_tool_call(
+                    context=ctx,
+                    tool_name=name,
+                    success=False,
+                    error=str(exc),
+                    extra={"mcp_server_url": self.server_url},
+                )
             raise RuntimeError(f"MCP tool '{name}' çağrısı başarısız: {exc}") from exc
 
     def list_tools(self) -> List[str]:

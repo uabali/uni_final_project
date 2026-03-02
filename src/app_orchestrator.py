@@ -24,17 +24,21 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from . import splitter
 from .agent import build_agent_graph
+from .context import get_default_department_id
 from .loader import load_documents, load_single_document
 from .llm_provider import LLMProvider, create_default_provider
 from .memory import MemorySystem
 from .reranker import create_reranker
 from .retriever import build_bm25_retriever
-from .tools import register_rag_components, set_mcp_invoker
+from .tools import register_rag_components, register_recently_ingested, set_mcp_invoker
 from .tooling import HybridToolInvoker
 from .vectorstore import (
     add_documents_to_collection,
     create_embeddings,
     create_vectorstore,
+    delete_from_collection,
+    build_collection_name,
+    get_vectorstore_for_department,
 )
 
 logger = logging.getLogger("rag.orchestrator")
@@ -151,17 +155,24 @@ class RagApp:
             messages_list = state.get("messages", [])
             if messages_list:
                 last_msg = messages_list[-1]
-                content = getattr(last_msg, "content", "") or ""
-                if isinstance(content, str) and content and content != prev_content:
-                    delta = content[len(prev_content) :]
-                    if delta:
-                        yield ("token", delta)
-                    prev_content = content
+                # Yalnızca AI mesajlarındaki textleri stream et, ToolMessage'ları (document chunkları) atla
+                if last_msg.type == "ai":
+                    content = getattr(last_msg, "content", "") or ""
+                    # Tool call veya bos stringleri yield etme
+                    if isinstance(content, str) and content and content != prev_content:
+                        delta = content[len(prev_content) :]
+                        if delta:
+                            yield ("token", delta)
+                        prev_content = content
+                elif last_msg.type != "ai":
+                    # Eger ToolMessage veya baska tur isleniyorsa prev_content sifirlansin
+                    # Boylece bir sonraki AI mesaji icin delta hesabi bozulmaz
+                    prev_content = ""
 
         if last_state:
             yield ("done", {"state": last_state})
 
-    def ingest_paths(self, paths: List[str]) -> Dict[str, Any]:
+    def ingest_paths(self, paths: List[str], *, department_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Yeni dokümanları incremental olarak sisteme yükler.
 
@@ -176,6 +187,8 @@ class RagApp:
         ingested = 0
         skipped = 0
         errors: List[str] = []
+
+        effective_dept = (department_id or get_default_department_id()).strip() or get_default_department_id()
 
         for file_path in paths:
             # Dosya var mı kontrol et
@@ -196,6 +209,12 @@ class RagApp:
                     errors.append(f"Doküman okunamadı: {file_path}")
                     continue
 
+                # Her dokümanın metadata'sına department_id ekle
+                for doc in raw_docs:
+                    metadata = getattr(doc, "metadata", {}) or {}
+                    metadata["department_id"] = effective_dept
+                    setattr(doc, "metadata", metadata)
+
                 # 2. Split
                 chunks = splitter.split_documents(
                     raw_docs,
@@ -204,12 +223,24 @@ class RagApp:
                     chunk_overlap=self.config.chunk_overlap,
                 )
 
+                # Split sonrası oluşan her chunk'ın metadata'sına da department_id taşı
+                for ch in chunks:
+                    metadata = getattr(ch, "metadata", {}) or {}
+                    metadata.setdefault("department_id", effective_dept)
+                    setattr(ch, "metadata", metadata)
+
                 if not chunks:
                     errors.append(f"Chunk oluşturulamadı: {file_path}")
                     continue
 
                 # 3. Embed + Upsert
-                add_documents_to_collection(self.vectorstore, chunks)
+                # Strict multi-tenant modunda her departman icin ayri collection kullan
+                target_vs = get_vectorstore_for_department(
+                    self.vectorstore,
+                    self.config.qdrant_collection,
+                    effective_dept,
+                )
+                add_documents_to_collection(target_vs, chunks)
 
                 # 4. BM25 index'ini güncelle
                 self.docs.extend(chunks)
@@ -228,6 +259,9 @@ class RagApp:
                 # 5. Hash'i kaydet
                 self._ingestion_registry.mark_ingested(file_path)
 
+                # 6. Son yüklenen dosyayı kaydet ("bu belgede" sorguları için)
+                register_recently_ingested(os.path.basename(file_path))
+
                 ingested += 1
                 logger.info(f"Başarıyla yüklendi: {file_path} ({len(chunks)} chunk)")
 
@@ -244,6 +278,67 @@ class RagApp:
             "errors": errors,
         }
 
+    def delete_paths(self, paths: List[str], *, department_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Verilen dosya yollarına ait dokümanları sistemden siler.
+
+        - Qdrant vectorstore'dan ilgili chunk'ları kaldırır
+        - Bellekte tutulan docs listesini filtreler
+        - BM25 retriever'ı yeniden oluşturur (varsa)
+        - IngestionRegistry'den hash kaydını siler
+        """
+        deleted = 0
+        errors: List[str] = []
+
+        effective_dept = (department_id or get_default_department_id()).strip() or get_default_department_id()
+
+        for file_path in paths:
+            abs_path = os.path.abspath(file_path)
+            try:
+                # 1. Vectorstore'dan sil (sadece ilgili departmana ait chunk'lar)
+                target_vs = get_vectorstore_for_department(
+                    self.vectorstore,
+                    self.config.qdrant_collection,
+                    effective_dept,
+                )
+                delete_from_collection(target_vs, abs_path, department_id=effective_dept)
+
+                # 2. docs listesini filtrele (department_id + source eşleşmesine göre)
+                self.docs = [
+                    d
+                    for d in self.docs
+                    if not (
+                        (getattr(d, "metadata", {}) or {}).get("source") == abs_path
+                        and (getattr(d, "metadata", {}) or {}).get("department_id")
+                        == effective_dept
+                    )
+                ]
+
+                # 3. Ingestion registry'den kaldır
+                self._ingestion_registry.remove(abs_path)
+
+                deleted += 1
+            except Exception as exc:
+                logger.error(f"Silme hatası: {abs_path} — {exc}")
+                errors.append(f"Silme hatası ({abs_path}): {str(exc)}")
+
+        # 4. BM25 retriever'ı güncelle
+        if self.config.use_bm25:
+            try:
+                self.bm25_retriever = (
+                    build_bm25_retriever(self.docs) if self.docs else None
+                )
+                register_rag_components(
+                    vectorstore=self.vectorstore,
+                    bm25_retriever=self.bm25_retriever,
+                    reranker=self.reranker,
+                )
+            except Exception as exc:
+                logger.warning(f"BM25 index güncellenemedi (delete_paths): {exc}")
+
+        status = "completed" if not errors else ("partial" if deleted > 0 else "failed")
+        return {"status": status, "deleted": deleted, "errors": errors}
+
 
 def build_rag_app(config: Optional[RagAppConfig] = None) -> RagApp:
     """
@@ -257,21 +352,37 @@ def build_rag_app(config: Optional[RagAppConfig] = None) -> RagApp:
     documents = load_documents(data_dir=cfg.data_dir)
 
     if documents:
+        default_dept = get_default_department_id()
+        # Tüm başlangıç dokümanlarını varsayılan departman ile etiketle
+        for d in documents:
+            metadata = getattr(d, "metadata", {}) or {}
+            metadata.setdefault("department_id", default_dept)
+            setattr(d, "metadata", metadata)
+
         docs = splitter.split_documents(
             documents,
             method="recursive",
             chunk_size=cfg.chunk_size,
             chunk_overlap=cfg.chunk_overlap,
         )
+        # Split edilmiş chunk'lara da department_id taşı
+        for ch in docs:
+            metadata = getattr(ch, "metadata", {}) or {}
+            metadata.setdefault("department_id", default_dept)
+            setattr(ch, "metadata", metadata)
     else:
         docs = []
 
     # 2) Vectorstore (Qdrant)
+    # Varsayilan collection adi, strict mod kapaliysa tum departmanlar icin ortak,
+    # strict mod aciksa default departman icin departman-spesifik olarak kullanilir.
+    default_dept = get_default_department_id()
+    collection_name = build_collection_name(cfg.qdrant_collection, default_dept)
     vectorstore = create_vectorstore(
         docs,
         embeddings,
         url=cfg.qdrant_url,
-        collection_name=cfg.qdrant_collection,
+        collection_name=collection_name,
     )
 
     # 3) BM25 + Reranker
@@ -316,8 +427,19 @@ def build_rag_app(config: Optional[RagAppConfig] = None) -> RagApp:
     llm = provider.client
     agent = build_agent_graph(llm, memory=memory_system)
 
-    # 7) Ingestion registry — mevcut dokümanları kaydet
+    # 7) Ingestion registry — mevcut dokümanları kaydet (restart sonrası tekrar ingest önlenir)
     registry = IngestionRegistry()
+    seen_paths: set = set()
+    for doc in docs:
+        src = (getattr(doc, "metadata", None) or {}).get("source")
+        if src:
+            try:
+                abs_path = os.path.abspath(src)
+                if abs_path not in seen_paths and os.path.exists(abs_path):
+                    registry.mark_ingested(abs_path)
+                    seen_paths.add(abs_path)
+            except Exception:
+                pass
 
     return RagApp(
         config=cfg,

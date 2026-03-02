@@ -57,6 +57,37 @@ def _save_fingerprint(collection_name: str, fingerprint: str) -> None:
     file_path.write_text(fingerprint, encoding="utf-8")
 
 
+def is_multi_tenant_strict() -> bool:
+    """
+    RAG_MULTI_TENANT_STRICT=true ise her departman icin ayri Qdrant collection kullan.
+    Varsayilan: false (tek collection + department_id payload filtresi).
+    """
+    return os.getenv("RAG_MULTI_TENANT_STRICT", "false").strip().lower() == "true"
+
+
+def _normalize_namespace(name: str) -> str:
+    """Departman kimligini Qdrant collection icin guvenli bir isme cevirir."""
+    import re
+
+    s = (name or "").strip().lower()
+    if not s:
+        return "default"
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = s.strip("_")
+    return s or "default"
+
+
+def build_collection_name(base: str, department_id: str | None) -> str:
+    """
+    Base collection adindan departman spesifik collection adi uretir.
+
+    strict mod kapaliysa her zaman base doner.
+    """
+    if not is_multi_tenant_strict() or not department_id:
+        return base
+    return f"{base}_{_normalize_namespace(department_id)}"
+
+
 def _wait_for_qdrant(client: QdrantClient, url: str) -> None:
     """Qdrant yeni kalkarken kisa sureli connection hatalarina karsi bekler."""
     try:
@@ -173,18 +204,56 @@ def add_documents_to_collection(vectorstore, docs):
     print(f"{len(docs)} chunk vektör veritabanına eklendi.")
 
 
-def delete_from_collection(vectorstore, file_path):
-    """Belirli bir dosyaya ait tüm chunk'ları Qdrant'tan siler."""
-    print(f"Siliniyor: {file_path}")
-    info_filter = models.Filter(
-        must=[
+def delete_from_collection(vectorstore, file_path, department_id: str | None = None):
+    """Belirli bir dosyaya ait tüm chunk'ları Qdrant'tan siler.
+
+    Eğer department_id verilmişse, sadece o departmana ait payload'lar silinir.
+    """
+    print(f"Siliniyor: {file_path} (department={department_id or 'ANY'})")
+    must_conditions = [
+        models.FieldCondition(
+            key="source", match=models.MatchValue(value=file_path)
+        )
+    ]
+    if department_id:
+        must_conditions.append(
             models.FieldCondition(
-                key="source", match=models.MatchValue(value=file_path)
+                key="department_id",
+                match=models.MatchValue(value=department_id),
             )
-        ]
-    )
+        )
+
+    info_filter = models.Filter(must=must_conditions)
     vectorstore.client.delete(
         collection_name=vectorstore.collection_name,
         points_selector=models.FilterSelector(filter=info_filter),
     )
     print("Silme islemi tamamlandi.")
+
+
+def get_vectorstore_for_department(
+    base_vectorstore: QdrantVectorStore,
+    base_collection_name: str,
+    department_id: str | None,
+) -> QdrantVectorStore:
+    """
+    Strict multi-tenant modda, verilen departman icin ayri bir QdrantVectorStore dondurur.
+
+    - strict=false veya department_id yoksa → base_vectorstore
+    - strict=true → base_collection_name + department_id ile yeni collection adi olusturulur.
+      Eger bu isim zaten base_vectorstore.collection_name ise ayni instance geri doner.
+    """
+    if not is_multi_tenant_strict() or not department_id:
+        return base_vectorstore
+
+    target_name = build_collection_name(base_collection_name, department_id)
+    if target_name == base_vectorstore.collection_name:
+        return base_vectorstore
+
+    client = base_vectorstore.client
+    embeddings = base_vectorstore.embedding  # type: ignore[attr-defined]
+    return QdrantVectorStore(
+        client=client,
+        collection_name=target_name,
+        embedding=embeddings,
+    )

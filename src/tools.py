@@ -10,12 +10,99 @@ from __future__ import annotations
 
 import os
 import re
+import time
 
 from langchain_core.tools import tool
 from cachetools import TTLCache
 
+from src.context import get_request_context
+from src.audit import get_audit_logger
+from src.vectorstore import get_vectorstore_for_department, build_collection_name
+
 
 # ── RAG Search ──────────────────────────────────────────────
+
+# Son yüklenen dosyaları takip et — "bu belgede" tipi sorgular için
+_recently_ingested_files: list[dict] = []  # [{"source": "...", "timestamp": ...}]
+
+
+def register_recently_ingested(source_name: str) -> None:
+    """Yeni yüklenen dosyayı kaydet (ingest sonrası çağrılır)."""
+    _recently_ingested_files.append({
+        "source": source_name,
+        "timestamp": time.time(),
+    })
+    # Son 20 dosyayı tut
+    if len(_recently_ingested_files) > 20:
+        _recently_ingested_files.pop(0)
+
+
+def _extract_file_reference(query: str) -> str | None:
+    """
+    Sorgudan dosya referansı çıkarır.
+    
+    Desteklenen kalıplar:
+    - "bu belgede", "bu dosyada", "bu PDF'de" → son yüklenen dosya
+    - "architecture.pdf'de" → doğrudan dosya adı
+    - "[Sisteme yeni yüklenen dosyalar: X.pdf]" → metadata'dan
+    """
+    ql = query.lower()
+    
+    # 1. Doğrudan dosya adı referansı ("architecture.pdf hakkında", "X.pdf'de")
+    file_match = re.search(r'([\w\-\.]+\.(?:pdf|txt|docx|md))', ql)
+    if file_match:
+        return file_match.group(1)
+    
+    # 2. "Sisteme yeni yüklenen dosyalar" metadata'sından
+    upload_match = re.search(r'\[sisteme yeni yüklenen dosyalar?:\s*([^\]]+)\]', ql)
+    if upload_match:
+        files_str = upload_match.group(1).strip()
+        # İlk dosyayı al
+        first_file = files_str.split(',')[0].strip()
+        return first_file if first_file else None
+    
+    # 3. "Bu belgede", "bu dosyada", "bu PDF'de" → son yüklenen dosyaya referans
+    deictic_patterns = [
+        r'bu\s+belge', r'bu\s+dosya', r'bu\s+pdf',
+        r'bu\s+dokuman', r'yuklen\w*\s+belge', r'yuklen\w*\s+dosya',
+    ]
+    if any(re.search(p, ql) for p in deictic_patterns):
+        if _recently_ingested_files:
+            return _recently_ingested_files[-1]["source"]
+    
+    return None
+
+
+def _filter_docs_by_source(docs: list, source_name: str) -> list:
+    """
+    Doküman listesini belirli bir kaynak dosyaya göre filtreler.
+    source_name ile eşleşen chunk'ları önceliklendirir.
+    Eşleşme bulunamazsa orijinal listeyi döner.
+    """
+    if not source_name or not docs:
+        return docs
+    
+    source_lower = source_name.lower()
+    matched = []
+    unmatched = []
+    
+    for doc in docs:
+        metadata = getattr(doc, "metadata", {}) or {}
+        doc_source = str(metadata.get("source", "")).lower()
+        doc_basename = os.path.basename(doc_source).lower()
+        
+        if source_lower in doc_source or source_lower in doc_basename:
+            matched.append(doc)
+        else:
+            unmatched.append(doc)
+    
+    if matched:
+        # Eşleşen chunk'ları önce, sonra diğerlerini (ama sınırlı) ekle
+        return matched + unmatched[:2]
+    
+    # Eşleşme yoksa orijinal listeyi döndür
+    return docs
+
 
 _rag_components: dict = {}
 _SEARCH_CACHE: TTLCache | None = None
@@ -63,6 +150,8 @@ _SIMPLE_QUERY_TERMS = [
 _QUERY_STOPWORDS = {
     "ve", "ile", "icin", "bu", "su", "o", "da", "de", "mi", "mu", "midir",
     "the", "is", "are", "what", "who", "where", "when", "how", "in", "on", "of",
+    # Türkçe soru kelimeleri ve sık kullanılan genel kelimeler
+    "nedir", "kimdir", "hangi", "nasil", "neden", "kac", "ne", "var", "yok",
 }
 
 
@@ -161,8 +250,8 @@ def search_documents(query: str) -> str:
     lecture notes, or concepts. The query can be in Turkish or English."""
 
     from src.retriever import create_retriever, run_retriever
-    vs = _rag_components.get("vectorstore")
-    if vs is None:
+    vs_base = _rag_components.get("vectorstore")
+    if vs_base is None:
         return "ERROR: Vectorstore is not initialized yet."
 
     cache_key = query.strip().lower()
@@ -170,6 +259,39 @@ def search_documents(query: str) -> str:
     cached = search_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    # Dosya referansı algıla
+    file_ref = _extract_file_reference(query)
+
+    # Department bazlı namespace izolasyonu için Qdrant filter hazırla
+    ctx = get_request_context()
+    metadata_filter = None
+    if ctx is not None and getattr(ctx, "department_id", None):
+        try:
+            from qdrant_client.http import models as qmodels
+
+            metadata_filter = qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="department_id",
+                        match=qmodels.MatchValue(value=ctx.department_id),
+                    )
+                ]
+            )
+        except Exception:
+            # Qdrant client yoksa veya filter oluşturulamazsa, filtreyi sessizce atla
+            metadata_filter = None
+
+    # Strict multi-tenant modda, departman bazli collection kullan
+    if ctx is not None and getattr(ctx, "department_id", None):
+        base_collection = os.getenv("QDRANT_COLLECTION", "rag_collection").strip()
+        vs = get_vectorstore_for_department(
+            vs_base,
+            base_collection,
+            ctx.department_id,
+        )
+    else:
+        vs = vs_base
 
     retrieval_strategy = os.getenv("RAG_RETRIEVAL_STRATEGY", "hybrid")
 
@@ -180,6 +302,7 @@ def search_documents(query: str) -> str:
         strategy=retrieval_strategy,
         base_k=int(os.getenv("RAG_BASE_K", "8")),
         bm25_weight=float(os.getenv("RAG_BM25_WEIGHT", "0.4")),
+        metadata_filter=metadata_filter,
         use_rerank=(
             _rag_components.get("reranker") is not None
             and os.getenv("RAG_USE_RERANK", "true").lower() == "true"
@@ -190,7 +313,21 @@ def search_documents(query: str) -> str:
 
     docs = run_retriever(retriever, query)
 
+    # Dosya referansı varsa, chunk'ları o dosyaya göre filtrele
+    if file_ref and docs:
+        docs = _filter_docs_by_source(docs, file_ref)
+
     if not docs:
+        audit = get_audit_logger()
+        if audit.is_available:
+            audit.log_rag_retrieval(
+                context=ctx,
+                query=query,
+                status="none",
+                confidence=0.0,
+                num_docs=0,
+                extra={"file_ref": file_ref},
+            )
         return (
             "[LOCAL_SEARCH_STATUS]: none\n"
             "[LOCAL_SEARCH_CONFIDENCE]: 0.00\n"
@@ -198,15 +335,43 @@ def search_documents(query: str) -> str:
         )
 
     confidence = _estimate_local_confidence(query, docs)
+    
+    # Dosya filtresi uygulandıysa ve eşleşen chunk varsa, confidence'ı boost et
+    if file_ref:
+        matched_count = sum(
+            1 for doc in docs
+            if file_ref.lower() in str(getattr(doc, "metadata", {}).get("source", "")).lower()
+        )
+        if matched_count > 0:
+            confidence = max(confidence, 0.60)  # Dosya eşleşmesi varsa minimum 0.60
+    
     threshold = float(os.getenv("LOCAL_SEARCH_CONF_THRESHOLD", "0.35"))
     status = "high" if confidence >= threshold else "low"
 
     context = _format_chunked_context(docs, query)
+    
+    # Dosya filtresi bilgisini ekle
+    filter_info = ""
+    if file_ref:
+        filter_info = f"[DOCUMENT_FILTER]: {file_ref}\n"
+    
     output = (
         f"[LOCAL_SEARCH_STATUS]: {status}\n"
-        f"[LOCAL_SEARCH_CONFIDENCE]: {confidence:.2f}\n\n"
+        f"[LOCAL_SEARCH_CONFIDENCE]: {confidence:.2f}\n"
+        f"{filter_info}\n"
         f"{context}"
     )
+
+    audit = get_audit_logger()
+    if audit.is_available:
+        audit.log_rag_retrieval(
+            context=ctx,
+            query=query,
+            status=status,
+            confidence=confidence,
+            num_docs=len(docs),
+            extra={"file_ref": file_ref},
+        )
 
     search_cache[cache_key] = output
     return output
@@ -225,7 +390,6 @@ def _detect_topic(query: str) -> str:
 
 
 def _clean_snippet(text: str, max_chars: int) -> str:
-    import re
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > max_chars:

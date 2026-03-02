@@ -14,9 +14,8 @@ import {
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { PanelLeft, Settings, Sun, Moon, ChevronDown, Sparkles } from "lucide-react";
-import { setLlmConfig } from "@/lib/api";
-import { SettingsDialog } from "./settings-dialog";
+import { PanelLeft, Sun, Moon, ChevronDown, Sparkles } from "lucide-react";
+import { setLlmConfig, getLlmConfig } from "@/lib/api";
 import { useSettingsStore } from "@/store/settings-store";
 import Image from "next/image";
 
@@ -26,13 +25,28 @@ export function ChatHeader() {
     const settings = useSettingsStore();
 
     const [isDark, setIsDark] = React.useState(true);
-    const [selectedModel, setSelectedModel] = React.useState("Frappe Pro");
+    const [selectedModel, setSelectedModel] = React.useState("Yükleniyor...");
+    const [modelSubtext, setModelSubtext] = React.useState("");
     const [isChangingModel, setIsChangingModel] = React.useState(false);
 
     // Check if component mounted to avoid hydration mismatch
     const [isMounted, setIsMounted] = React.useState(false);
     React.useEffect(() => {
         setIsMounted(true);
+        // Fetch actual model name from backend on mount
+        getLlmConfig().then((config) => {
+            if (config.model && config.model !== "unknown") {
+                // Extract short name: "Qwen/Qwen2.5-1.5B-Instruct-AWQ" → "Qwen2.5-1.5B-Instruct-AWQ"
+                const shortName = config.model.includes("/")
+                    ? config.model.split("/").pop() || config.model
+                    : config.model;
+                setSelectedModel(shortName);
+                setModelSubtext(config.provider || "");
+            } else {
+                setSelectedModel("Frappe Pro");
+                setModelSubtext("vLLM Local");
+            }
+        });
     }, []);
 
     const activeConversation = conversations.find(
@@ -50,6 +64,7 @@ export function ChatHeader() {
         try {
             await setLlmConfig(provider, modelStr, apiKey, baseUrl);
             setSelectedModel(name);
+            setModelSubtext(provider);
         } catch (error) {
             console.error("Failed to set LLM config:", error);
             const msg = error instanceof Error ? error.message : "Model değiştirilirken hata oluştu!";
@@ -199,7 +214,22 @@ export function ChatHeader() {
 
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-3">
+                {/* Department selector */}
+                <div className="hidden sm:flex items-center gap-1 text-xs text-muted-foreground">
+                    <span className="font-medium">Departman:</span>
+                    <select
+                        className="bg-muted/40 border border-border/60 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-border"
+                        value={settings.departmentId}
+                        onChange={(e) => settings.setDepartmentId(e.target.value)}
+                    >
+                        <option value="engineering">Engineering</option>
+                        <option value="project_mgmt">Project Mgmt</option>
+                        <option value="hr">HR</option>
+                        <option value="finance">Finance</option>
+                    </select>
+                </div>
+
                 <Tooltip>
                     <TooltipTrigger asChild>
                         <Button
@@ -215,19 +245,6 @@ export function ChatHeader() {
                         {isDark ? "Açık Tema" : "Koyu Tema"}
                     </TooltipContent>
                 </Tooltip>
-
-                <SettingsDialog>
-                    <div>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-foreground/60 hover:text-foreground hover:bg-accent">
-                                    <Settings size={18} />
-                                </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>Ayarlar</TooltipContent>
-                        </Tooltip>
-                    </div>
-                </SettingsDialog>
             </div>
         </header>
     );

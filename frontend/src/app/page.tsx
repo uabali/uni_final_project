@@ -95,24 +95,6 @@ export default function Home() {
                   onExternalValueConsumed={() => setSuggestionText(undefined)}
                 />
               </div>
-
-              <div className="flex flex-wrap justify-center gap-2 mt-6 max-w-2xl">
-                {[
-                  { icon: "📝", label: "Yazı Yaz", prompt: "Yapay zeka hakkında kısa bir blog yazısı hazırla" },
-                  { icon: "💡", label: "Fikir Üret", prompt: "Hafta sonu yapılabilecek yazılım projeleri öner" },
-                  { icon: "💻", label: "Kod Yaz", prompt: "React ile basit bir sayaç bileşeni oluştur" },
-                  { icon: "📊", label: "Analiz Et", prompt: "RAG mimarisinin temel avantajlarını açıkla" }
-                ].map((s) => (
-                  <button
-                    key={s.label}
-                    onClick={() => handleSuggestionClick(s.prompt)}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-full border border-border/80 bg-card/40 hover:bg-accent text-sm font-medium text-foreground/80 hover:text-foreground transition-colors"
-                  >
-                    <span>{s.icon}</span>
-                    <span>{s.label}</span>
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
         ) : (

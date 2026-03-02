@@ -25,6 +25,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage
 
 from .vectorstore import create_embeddings
+from .context import get_request_context, get_default_department_id
 
 logger = logging.getLogger("rag.memory")
 
@@ -43,6 +44,31 @@ class MemoryConfig:
     summary_trigger_turns: int = field(default_factory=lambda: int(os.getenv("SUMMARY_TRIGGER_TURNS", "20")))
 
 
+def is_memory_multi_tenant_strict() -> bool:
+    """
+    MEMORY_MULTI_TENANT_STRICT=true ise hafiza (Redis + episodic) katmaninda
+    departman bazli anahtar/collection kullan.
+    """
+    return os.getenv("MEMORY_MULTI_TENANT_STRICT", "false").strip().lower() == "true"
+
+
+def _effective_department_id() -> str:
+    ctx = get_request_context()
+    if ctx is not None and getattr(ctx, "department_id", None):
+        return ctx.department_id
+    return get_default_department_id()
+
+
+def _with_department_prefix(key: str) -> str:
+    """
+    Strict modda Redis anahtarlarini departman ile prefix'ler.
+    """
+    if not is_memory_multi_tenant_strict():
+        return key
+    dept = _effective_department_id()
+    return f"{dept}:{key}"
+
+
 class ShortTermMemory:
     """
     Redis tabanli sliding window:
@@ -55,7 +81,8 @@ class ShortTermMemory:
         self._cfg = cfg
 
     def load(self, session_id: str) -> Sequence[BaseMessage]:
-        raw = self._client.get(session_id)
+        key = _with_department_prefix(session_id)
+        raw = self._client.get(key)
         if not raw:
             return []
         try:
@@ -76,6 +103,7 @@ class ShortTermMemory:
         return messages[-self._cfg.short_term_max_turns :]
 
     def save(self, session_id: str, history: Sequence[BaseMessage]) -> None:
+        key = _with_department_prefix(session_id)
         serializable: List[Dict[str, Any]] = []
         for msg in history[-self._cfg.short_term_max_turns :]:
             role = "other"
@@ -85,14 +113,15 @@ class ShortTermMemory:
                 role = "ai"
             serializable.append({"role": role, "content": msg.content})
         self._client.setex(
-            session_id,
+            key,
             self._cfg.short_term_ttl_seconds,
             json.dumps(serializable, ensure_ascii=False),
         )
 
     def get_turn_count(self, session_id: str) -> int:
         """Session'daki mesaj sayısını döner."""
-        raw = self._client.get(session_id)
+        key = _with_department_prefix(session_id)
+        raw = self._client.get(key)
         if not raw:
             return 0
         try:
@@ -114,7 +143,8 @@ class EntityMemory:
         self._cfg = cfg
 
     def load(self, entity_id: str) -> Dict[str, Any]:
-        key = f"{self._cfg.entity_prefix}{entity_id}"
+        prefixed_id = _with_department_prefix(entity_id) if is_memory_multi_tenant_strict() else entity_id
+        key = f"{self._cfg.entity_prefix}{prefixed_id}"
         raw = self._client.hgetall(key)
         result: Dict[str, Any] = {}
         for field, value in raw.items():
@@ -125,7 +155,8 @@ class EntityMemory:
         return result
 
     def save(self, entity_id: str, data: Dict[str, Any]) -> None:
-        key = f"{self._cfg.entity_prefix}{entity_id}"
+        prefixed_id = _with_department_prefix(entity_id) if is_memory_multi_tenant_strict() else entity_id
+        key = f"{self._cfg.entity_prefix}{prefixed_id}"
         mapping = {
             k: json.dumps(v, ensure_ascii=False) for k, v in data.items()
         }
@@ -143,42 +174,58 @@ class EpisodicMemory:
     def __init__(self, cfg: MemoryConfig):
         self._cfg = cfg
         self._embeddings = create_embeddings()
-        # Collection yoksa once olustur, sonra baglan.
-        self._ensure_collection_exists()
         from qdrant_client import QdrantClient
-        from langchain_qdrant import QdrantVectorStore
 
-        client = QdrantClient(url=self._cfg.qdrant_url)
-        self._vectorstore = QdrantVectorStore(
-            client=client,
-            collection_name=self._cfg.episodic_collection,
-            embedding=self._embeddings,
-        )
+        self._client = QdrantClient(url=self._cfg.qdrant_url)
+        # Varsayilan collection icin en azindan bir kez ensure et
+        self._ensure_collection_exists(self._cfg.episodic_collection)
 
-    def _ensure_collection_exists(self) -> None:
+    def _ensure_collection_exists(self, collection_name: str) -> None:
         """Qdrant'ta episodic collection yoksa bos olusturur."""
-        from qdrant_client import QdrantClient
         from qdrant_client.models import Distance, VectorParams
 
-        client = QdrantClient(url=self._cfg.qdrant_url)
-        collections = [c.name for c in client.get_collections().collections]
-        if self._cfg.episodic_collection not in collections:
+        collections = [c.name for c in self._client.get_collections().collections]
+        if collection_name not in collections:
             # Embedding boyutunu tespit et
             sample = self._embeddings.embed_query("test")
             dim = len(sample)
-            client.create_collection(
-                collection_name=self._cfg.episodic_collection,
+            self._client.create_collection(
+                collection_name=collection_name,
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
-            print(f"Episodic memory collection olusturuldu: {self._cfg.episodic_collection}")
+            print(f"Episodic memory collection olusturuldu: {collection_name}")
+
+    def _get_vectorstore_for_current_department(self):
+        from langchain_qdrant import QdrantVectorStore
+
+        base = self._cfg.episodic_collection
+        if not is_memory_multi_tenant_strict():
+            collection_name = base
+        else:
+            dept = _effective_department_id()
+            # memory icin basit normalizasyon: ayni fonksiyon mantigi
+            import re
+
+            s = re.sub(r"[^a-zA-Z0-9]+", "_", dept).strip("_").lower() or "default"
+            collection_name = f"{base}_{s}"
+
+        self._ensure_collection_exists(collection_name)
+
+        return QdrantVectorStore(
+            client=self._client,
+            collection_name=collection_name,
+            embedding=self._embeddings,
+        )
 
     def search(self, query: str, k: int = 5) -> List[Document]:
-        retriever = self._vectorstore.as_retriever(search_kwargs={"k": k})
+        vs = self._get_vectorstore_for_current_department()
+        retriever = vs.as_retriever(search_kwargs={"k": k})
         return retriever.invoke(query)
 
     def add_episode(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        vs = self._get_vectorstore_for_current_department()
         doc = Document(page_content=text, metadata=metadata or {})
-        self._vectorstore.add_documents([doc])
+        vs.add_documents([doc])
 
 
 # ── Summary Store (Postgres) ─────────────────────────────────

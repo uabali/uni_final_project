@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect } from "react";
 import { useChatStore, Message } from "@/store/chat-store";
-import { Copy, Check, ExternalLink } from "lucide-react";
+import { Copy, Check, ExternalLink, Clock, Hash } from "lucide-react";
 import Image from "next/image";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -102,6 +102,30 @@ function SourceChips({ sources }: { sources: { title: string; url: string; snipp
     );
 }
 
+function ResponseMeta({ message }: { message: Message }) {
+    if (message.role === "user") return null;
+    if (!message.latency_ms && !message.token_count) return null;
+
+    const latencySec = message.latency_ms ? (message.latency_ms / 1000).toFixed(1) : null;
+
+    return (
+        <div className="flex items-center gap-3 mt-1.5 text-[11px] text-muted-foreground/60 font-medium">
+            {latencySec && (
+                <span className="inline-flex items-center gap-1">
+                    <Clock size={11} className="opacity-60" />
+                    {latencySec}s
+                </span>
+            )}
+            {message.token_count != null && message.token_count > 0 && (
+                <span className="inline-flex items-center gap-1">
+                    <Hash size={11} className="opacity-60" />
+                    ~{message.token_count} token
+                </span>
+            )}
+        </div>
+    );
+}
+
 function MessageBubble({ message }: { message: Message }) {
     const [copied, setCopied] = React.useState(false);
     const isUser = message.role === "user";
@@ -160,6 +184,9 @@ function MessageBubble({ message }: { message: Message }) {
 
                 {/* Source Chips */}
                 {!isUser && message.sources && <SourceChips sources={message.sources} />}
+
+                {/* Response Metadata (latency + tokens) */}
+                {!isUser && <ResponseMeta message={message} />}
 
                 {/* Actions */}
                 {!isUser && (

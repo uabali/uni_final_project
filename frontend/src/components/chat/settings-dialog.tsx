@@ -1,7 +1,9 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useSettingsStore } from "@/store/settings-store";
+import { useChatStore } from "@/store/chat-store";
+import { API_URL } from "@/lib/api";
 import {
     Dialog,
     DialogContent,
@@ -29,13 +31,55 @@ interface SettingsDialogProps {
     children: React.ReactNode;
 }
 
+type SettingsTab = "general" | "api_keys" | "monitoring";
+
 export function SettingsDialog({ children }: SettingsDialogProps) {
     const [isOpen, setIsOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<"general" | "api_keys">("api_keys");
+    const [activeTab, setActiveTab] = useState<SettingsTab>("api_keys");
     const [isMounted, setIsMounted] = useState(false);
 
     // Settings state from local storage
     const settings = useSettingsStore();
+    const { conversations, activeConversationId } = useChatStore();
+
+    const activeConversation = useMemo(
+        () => conversations.find((c) => c.id === activeConversationId) || null,
+        [conversations, activeConversationId],
+    );
+
+    const monitoringStats = useMemo(() => {
+        if (!activeConversation) {
+            return null;
+        }
+        const assistantMessages = activeConversation.messages.filter(
+            (m) => m.role === "assistant",
+        );
+        if (assistantMessages.length === 0) {
+            return null;
+        }
+
+        let totalTokens = 0;
+        let totalLatency = 0;
+        let latencyCount = 0;
+
+        for (const msg of assistantMessages) {
+            if (typeof msg.token_count === "number") {
+                totalTokens += msg.token_count;
+            }
+            if (typeof msg.latency_ms === "number") {
+                totalLatency += msg.latency_ms;
+                latencyCount += 1;
+            }
+        }
+
+        const avgLatency = latencyCount > 0 ? totalLatency / latencyCount : null;
+
+        return {
+            turns: assistantMessages.length,
+            totalTokens,
+            avgLatencyMs: avgLatency,
+        };
+    }, [activeConversation]);
 
     // Local state for the inputs before saving
     const [localOpenai, setLocalOpenai] = useState("");
@@ -44,6 +88,8 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
     const [localOpenRouter, setLocalOpenRouter] = useState("");
     const [localGemini, setLocalGemini] = useState("");
     const [localBackendApiKey, setLocalBackendApiKey] = useState("");
+    const [localDepartmentId, setLocalDepartmentId] = useState("engineering");
+    const [metricsSummary, setMetricsSummary] = useState<any | null>(null);
 
     const [isSavedHovered, setIsSavedHovered] = useState(false);
     const [savedStatus, setSavedStatus] = useState(false);
@@ -61,6 +107,7 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
             setLocalOpenRouter(settings.openRouterKey);
             setLocalGemini(settings.geminiKey);
             setLocalBackendApiKey(settings.backendApiKey);
+            setLocalDepartmentId(settings.departmentId || "engineering");
             setSavedStatus(false);
         }
     }, [
@@ -80,6 +127,7 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
         settings.setOpenRouterKey(localOpenRouter);
         settings.setGeminiKey(localGemini);
         settings.setBackendApiKey(localBackendApiKey);
+        settings.setDepartmentId(localDepartmentId);
 
         setSavedStatus(true);
         setTimeout(() => {
@@ -95,8 +143,8 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
             <DialogTrigger asChild>
                 {children}
             </DialogTrigger>
-            <DialogContent className="max-w-3xl p-0 overflow-hidden border-border/40 shadow-2xl rounded-2xl bg-background/95 backdrop-blur-2xl">
-                <div className="flex h-[550px]">
+            <DialogContent className="max-w-4xl p-0 overflow-hidden border-border/40 shadow-2xl rounded-2xl bg-background/95 backdrop-blur-2xl">
+                <div className="flex h-[700px] w-full max-w-[1100px]">
                     {/* Sidebar */}
                     <div className="w-[220px] bg-muted/30 border-r border-border/40 p-3 h-full flex flex-col gap-1">
                         <h2 className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-2 mt-2">
@@ -128,6 +176,19 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
                             <Key size={18} className={activeTab === "api_keys" ? "text-primary" : "text-muted-foreground"} />
                             API Bağlantıları
                         </button>
+                        <button
+                            onClick={() => setActiveTab("monitoring")}
+                            className={`
+                flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition-all duration-200
+                ${activeTab === "monitoring"
+                                    ? "bg-foreground/5 text-foreground"
+                                    : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                                }
+              `}
+                        >
+                            <Cpu size={18} className={activeTab === "monitoring" ? "text-primary" : "text-muted-foreground"} />
+                            Monitoring
+                        </button>
 
                         <div className="mt-auto px-3 py-4">
                             <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground/50">
@@ -141,12 +202,18 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
                     <div className="flex-1 flex flex-col h-full bg-background relative">
                         <DialogHeader className="px-8 py-6 border-b border-border/40 pb-5">
                             <DialogTitle className="text-xl font-semibold tracking-tight">
-                                {activeTab === "general" ? "Genel Ayarlar" : "API Bağlantıları"}
+                                {activeTab === "general"
+                                    ? "Genel Ayarlar"
+                                    : activeTab === "api_keys"
+                                        ? "API Bağlantıları"
+                                        : "Monitoring ve İzleme"}
                             </DialogTitle>
                             <p className="text-[14px] text-muted-foreground mt-1.5">
                                 {activeTab === "general"
                                     ? "Frappe asistanınızın temel yapılandırmasını özelleştirin."
-                                    : "Kendi API anahtarlarınızı bağlayarak özel modelleri kullanın. Tüm veriler sadece tarayıcınızda (yerel) kriptolanarak saklanır."}
+                                    : activeTab === "api_keys"
+                                        ? "Kendi API anahtarlarınızı bağlayarak özel modelleri kullanın. Tüm veriler sadece tarayıcınızda (yerel) kriptolanarak saklanır."
+                                        : "Sohbetlerinizin performansını ve LangSmith/LangChain tracing ile arka planda neler olduğunu izleyin."}
                             </p>
                         </DialogHeader>
 
@@ -166,6 +233,26 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
                                             className="flex h-10 w-full rounded-xl border border-border/80 bg-background/50 px-3 py-2 text-[14px] transition-colors focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                                         />
                                         <p className="text-[12px] text-muted-foreground/80">Backend API_KEY env degiskeni tanimliysa bu alani doldurun.</p>
+                                    </div>
+                                    <div className="flex flex-col gap-2">
+                                        <label className="text-[13px] font-semibold tracking-wide text-muted-foreground uppercase flex items-center gap-2">
+                                            <ShieldCheck size={15} />
+                                            Varsayılan Departman
+                                        </label>
+                                        <select
+                                            className="flex h-10 w-full rounded-xl border border-border/80 bg-background/50 px-3 py-2 text-[14px] transition-colors focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                                            value={localDepartmentId}
+                                            onChange={(e) => setLocalDepartmentId(e.target.value)}
+                                        >
+                                            <option value="engineering">Engineering</option>
+                                            <option value="project_mgmt">Project Mgmt</option>
+                                            <option value="hr">HR</option>
+                                            <option value="finance">Finance</option>
+                                        </select>
+                                        <p className="text-[12px] text-muted-foreground/80">
+                                            JWT entegrasyonu ile backend tarafında departman bazlı yetki ve RAG izolasyonu
+                                            uygulanır. Local geliştirmede bu değer istek başlıklarında taşınır.
+                                        </p>
                                     </div>
                                     <div className="flex flex-col gap-2">
                                         <label className="text-[13px] font-semibold tracking-wide text-muted-foreground uppercase flex items-center gap-2">
@@ -282,6 +369,133 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
                                             className="bg-transparent border-border/60 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:border-primary/50 rounded-xl h-11 text-[14px]"
                                         />
                                         <p className="text-[12px] text-muted-foreground/80 mt-1">Cihazınızda çalışan yerel modelleri bağlamak için varsayılan sunucu adresini girin.</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab === "monitoring" && (
+                                <div className="space-y-6">
+                                    <div className="flex flex-col gap-2">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <Cpu size={18} className="text-primary" />
+                                                <span className="text-[13px] font-semibold tracking-wide text-muted-foreground uppercase">
+                                                    Aktif Sohbet Özeti
+                                                </span>
+                                            </div>
+                                        </div>
+                                        {activeConversation && monitoringStats ? (
+                                            <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                                <div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5 flex flex-col gap-1">
+                                                    <span className="text-[11px] text-muted-foreground/80 uppercase tracking-wide">
+                                                        Tur Sayısı
+                                                    </span>
+                                                    <span className="text-[18px] font-semibold text-foreground">
+                                                        {monitoringStats.turns}
+                                                    </span>
+                                                </div>
+                                                <div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5 flex flex-col gap-1">
+                                                    <span className="text-[11px] text-muted-foreground/80 uppercase tracking-wide">
+                                                        Toplam Token
+                                                    </span>
+                                                    <span className="text-[18px] font-semibold text-foreground">
+                                                        {monitoringStats.totalTokens || 0}
+                                                    </span>
+                                                    <span className="text-[11px] text-muted-foreground/70">
+                                                        (Sadece backend'in raporladığı cevaplar)
+                                                    </span>
+                                                </div>
+                                                <div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5 flex flex-col gap-1">
+                                                    <span className="text-[11px] text-muted-foreground/80 uppercase tracking-wide">
+                                                        Ortalama Gecikme
+                                                    </span>
+                                                    <span className="text-[18px] font-semibold text-foreground">
+                                                        {monitoringStats.avgLatencyMs
+                                                            ? `${(monitoringStats.avgLatencyMs / 1000).toFixed(1)} sn`
+                                                            : "—"}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <p className="text-[13px] text-muted-foreground/80">
+                                                Şu anda aktif sohbet bulunmuyor ya da henüz yanıt üretilmedi. Token ve
+                                                gecikme metrikleri ilk asistans cevabından sonra burada görünecek.
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div className="flex flex-col gap-2">
+                                        <span className="text-[13px] font-semibold tracking-wide text-muted-foreground uppercase flex items-center gap-2">
+                                            LangSmith / LangChain Tracing
+                                        </span>
+                                        <p className="text-[13px] text-muted-foreground/85 leading-relaxed">
+                                            Backend tarafında <code className="text-xs px-1 py-0.5 rounded bg-muted border border-border/60">LANGCHAIN_TRACING_V2=true</code>{" "}
+                                            ve geçerli bir <code className="text-xs px-1 py-0.5 rounded bg-muted border border-border/60">LANGCHAIN_API_KEY</code> tanımlıysa,
+                                            her <code className="text-xs px-1 py-0.5 rounded bg-muted border border-border/60">/chat</code> isteği LangSmith&apos;te{" "}
+                                            <span className="font-semibold">local-ai-stack</span> projesi altında
+                                            detaylı bir trace olarak görünür.
+                                        </p>
+                                        <ul className="list-disc list-inside text-[13px] text-muted-foreground/85 space-y-1.5">
+                                            <li>Her node için run adı olarak <code className="text-xs px-1 py-0.5 rounded bg-muted border border-border/60">api_chat_stream</code>,{" "}
+                                                <code className="text-xs px-1 py-0.5 rounded bg-muted border border-border/60">react_agent</code>, <code className="text-xs px-1 py-0.5 rounded bg-muted border border-border/60">search_documents</code>{" "}
+                                                gibi isimler kullanılır.</li>
+                                            <li>Token kullanımı ve gecikme süresi, LangSmith UI&apos;ında ayrıca
+                                                izlenebilir; bu ekrandaki özet sadece aktif sohbet için hafif bir
+                                                özet sağlar.</li>
+                                            <li>Daha agresif optimizasyon için sistem prompt uzunluğunu ve RAG bağlam
+                                                boyutunu çevresel değişkenler üzerinden düşürebilirsiniz
+                                                (örneğin <code className="text-xs px-1 py-0.5 rounded bg-muted border border-border/60">SEARCH_TOOL_MAX_CHUNKS</code>,{" "}
+                                                <code className="text-xs px-1 py-0.5 rounded bg-muted border border-border/60">SEARCH_TOOL_MAX_CHARS_PER_CHUNK</code>).</li>
+                                        </ul>
+                                    </div>
+
+                                    <div className="flex flex-col gap-2">
+                                        <span className="text-[13px] font-semibold tracking-wide text-muted-foreground uppercase flex items-center gap-2">
+                                            Departman Bazlı Özet
+                                        </span>
+                                        <button
+                                            className="self-start text-[11px] px-2 py-1 rounded-full border border-border/60 text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+                                            onClick={async () => {
+                                                try {
+                                                    const res = await fetch(`${API_URL}/metrics/summary`);
+                                                    if (!res.ok) {
+                                                        throw new Error(await res.text());
+                                                    }
+                                                    const data = await res.json();
+                                                    setMetricsSummary(data);
+                                                } catch (e) {
+                                                    console.error("Metrics fetch failed:", e);
+                                                }
+                                            }}
+                                        >
+                                            Son Özeti Yükle
+                                        </button>
+                                        {metricsSummary && (
+                                            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3 text-[12px]">
+                                                {metricsSummary.departments?.map((d: any) => (
+                                                    <div
+                                                        key={d.department_id}
+                                                        className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2 flex flex-col gap-1"
+                                                    >
+                                                        <span className="text-[11px] text-muted-foreground/80 uppercase tracking-wide">
+                                                            {d.department_id}
+                                                        </span>
+                                                        <span className="text-[13px] font-semibold text-foreground">
+                                                            {d.total_requests} istek
+                                                        </span>
+                                                        <span className="text-[11px] text-muted-foreground/80">
+                                                            Ortalama gecikme:{" "}
+                                                            {d.avg_latency_ms
+                                                                ? `${(d.avg_latency_ms / 1000).toFixed(1)} sn`
+                                                                : "—"}
+                                                        </span>
+                                                        <span className="text-[11px] text-muted-foreground/80">
+                                                            Toplam token: {d.total_tokens}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )}

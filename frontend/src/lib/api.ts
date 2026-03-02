@@ -7,9 +7,18 @@ export function setBackendApiKey(key: string) {
     backendApiKey = key;
 }
 
+export function setDepartmentHeader(dept: string) {
+    // Şu an için sadece runtime'da kullanılan header'ı etkilemek üzere
+    // environment üzerinden değil, hafif bir global değişken olarak tutuyoruz.
+    currentDepartmentId = dept;
+}
+
+let currentDepartmentId: string | undefined = undefined;
+
 function getBaseHeaders(): Record<string, string> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
     if (backendApiKey) h["X-API-Key"] = backendApiKey;
+    if (currentDepartmentId) h["X-Department-ID"] = currentDepartmentId;
     return h;
 }
 
@@ -24,6 +33,15 @@ export interface ChatResponse {
 export interface StreamEvent {
     type: "token" | "sources" | "done" | "error";
     data: any;
+}
+
+export interface TaskStatusEvent {
+    task_id: string;
+    status: string;
+    progress?: number | null;
+    last_error?: string | null;
+    updated_at: string;
+    [key: string]: any;
 }
 
 export async function chatStream(
@@ -94,6 +112,38 @@ export async function chatStream(
     }
 }
 
+export function connectTaskStream(
+    taskId: string,
+    onStatus: (status: TaskStatusEvent) => void
+): () => void {
+    const protocol = API_URL.startsWith("https") ? "wss" : "ws";
+    const url = API_URL.replace(/^https?/, protocol) + `/ws/tasks/${encodeURIComponent(taskId)}`;
+
+    let socket: WebSocket | null = new WebSocket(url);
+
+    socket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data) as TaskStatusEvent;
+            onStatus(data);
+        } catch (err) {
+            console.error("Task WebSocket parse error:", err);
+        }
+    };
+
+    socket.onerror = (event) => {
+        console.error("Task WebSocket error:", event);
+    };
+
+    const cleanup = () => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.close();
+        }
+        socket = null;
+    };
+
+    return cleanup;
+}
+
 export async function setLlmConfig(provider: string, model?: string, apiKey?: string, baseUrl?: string) {
     const body: Record<string, string> = { provider };
     if (model) body.model = model;
@@ -142,4 +192,31 @@ export async function uploadFiles(files: File[]): Promise<{ status: string; inge
         throw new Error(`Dosya yükleme hatası: ${errorText}`);
     }
     return response.json();
+}
+
+export async function deleteIngestedFiles(names: string[]): Promise<{ status: string; deleted: number; errors: string[] }> {
+    const headers = getBaseHeaders();
+    const response = await fetch(`${API_URL}/ingest/delete`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ paths: names }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Dosya silme hatası: ${errorText}`);
+    }
+    return response.json();
+}
+
+export async function getLlmConfig(): Promise<{ provider: string; model: string }> {
+    try {
+        const response = await fetch(`${API_URL}/config/llm`, {
+            headers: getBaseHeaders(),
+        });
+        if (!response.ok) return { provider: "unknown", model: "unknown" };
+        return response.json();
+    } catch {
+        return { provider: "unknown", model: "unknown" };
+    }
 }

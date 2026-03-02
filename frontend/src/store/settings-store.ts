@@ -8,6 +8,7 @@ interface SettingsState {
     openRouterKey: string;
     geminiKey: string;
     backendApiKey: string;
+    departmentId: string;
 
     // Actions
     setOpenaiKey: (key: string) => void;
@@ -16,6 +17,7 @@ interface SettingsState {
     setOpenRouterKey: (key: string) => void;
     setGeminiKey: (key: string) => void;
     setBackendApiKey: (key: string) => void;
+    setDepartmentId: (dept: string) => void;
     clearKeys: () => void;
 }
 
@@ -28,6 +30,7 @@ export const useSettingsStore = create<SettingsState>()(
             openRouterKey: "",
             geminiKey: "",
             backendApiKey: "",
+            departmentId: "engineering",
 
             setOpenaiKey: (key) => set({ openaiKey: key }),
             setAnthropicKey: (key) => set({ anthropicKey: key }),
@@ -35,6 +38,7 @@ export const useSettingsStore = create<SettingsState>()(
             setOpenRouterKey: (key) => set({ openRouterKey: key }),
             setGeminiKey: (key) => set({ geminiKey: key }),
             setBackendApiKey: (key) => set({ backendApiKey: key }),
+            setDepartmentId: (dept) => set({ departmentId: dept }),
 
             clearKeys: () => set({
                 openaiKey: "",
@@ -43,6 +47,7 @@ export const useSettingsStore = create<SettingsState>()(
                 openRouterKey: "",
                 geminiKey: "",
                 backendApiKey: "",
+                departmentId: "engineering",
             }),
         }),
         {
@@ -54,7 +59,8 @@ export const useSettingsStore = create<SettingsState>()(
                 ollamaUrl: state.ollamaUrl,
                 openRouterKey: state.openRouterKey,
                 geminiKey: state.geminiKey,
-                backendApiKey: state.backendApiKey
+                backendApiKey: state.backendApiKey,
+                departmentId: state.departmentId,
             }),
         }
     )

@@ -8,13 +8,49 @@ import {
     TooltipContent,
     TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Paperclip, Mic, Globe, Square, ArrowUp, X, FileText, BookOpen } from "lucide-react";
-import { chatStream, uploadFiles } from "@/lib/api";
+import {
+    Paperclip,
+    Mic,
+    Globe,
+    Square,
+    ArrowUp,
+    X,
+    FileText,
+    BookOpen,
+    Cpu,
+} from "lucide-react";
+import { chatStream, uploadFiles, connectTaskStream, setDepartmentHeader } from "@/lib/api";
+import { useSettingsStore } from "@/store/settings-store";
+import { useTaskStore } from "@/store/task-store";
 
 interface MessageInputProps {
     externalValue?: string;
     onExternalValueConsumed?: () => void;
 }
+
+const MCP_PRESETS = [
+    {
+        id: "filesystem",
+        label: "Dosya Çalışma Alanı",
+        description: "/data altındaki dosyaları oku, yaz ve özetle.",
+        suggestedPrompt:
+            "MCP dosya sistemi araçlarını kullanarak /data klasöründeki önemli dokümanları listele ve hangi dosyalarla başlayabileceğimi öner.",
+    },
+    {
+        id: "postgres",
+        label: "Postgres Analiz",
+        description: "Okuma amaçlı SQL sorguları ile veri analizi.",
+        suggestedPrompt:
+            "MCP Postgres aracını kullanarak son 50 satırlık log tablosunu incele ve hata oranlarını özetle.",
+    },
+    {
+        id: "memory",
+        label: "Agent Hafıza Arama",
+        description: "Önceki sohbet ve notları hafızadan tara.",
+        suggestedPrompt:
+            "MCP memory_search aracını kullanarak benimle ilgili kayıtlı önemli notları bul ve kısa bir özet çıkar.",
+    },
+];
 
 export function MessageInput({
     externalValue,
@@ -22,8 +58,12 @@ export function MessageInput({
 }: MessageInputProps) {
     const [input, setInput] = useState("");
     const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+    const [uploadedFileNames, setUploadedFileNames] = useState<string[]>([]);
     const [isUploading, setIsUploading] = useState(false);
     const [useRag, setUseRag] = useState(false);
+    const [webSearchOnly, setWebSearchOnly] = useState(false);
+    const [useMcp, setUseMcp] = useState(false);
+    const [selectedMcpPreset, setSelectedMcpPreset] = useState<string | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const {
@@ -33,9 +73,12 @@ export function MessageInput({
         addMessageWithId,
         appendMessageContent,
         setMessageSources,
+        setMessageMeta,
         isGenerating,
         setIsGenerating,
     } = useChatStore();
+    const settings = useSettingsStore();
+    const { upsertTask, clearTask } = useTaskStore();
 
     useEffect(() => {
         if (externalValue) {
@@ -73,6 +116,11 @@ export function MessageInput({
 
     const streamResponse = useCallback(
         async (conversationId: string, userMessage: string) => {
+            // Department bilgisini header'a yansıt
+            if (settings.departmentId) {
+                setDepartmentHeader(settings.departmentId);
+            }
+
             setIsGenerating(true);
             const assistantMessageId = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
 
@@ -83,7 +131,14 @@ export function MessageInput({
                 content: "",
             });
 
+            let disconnectTaskStream: (() => void) | null = null;
+
             try {
+                // Task status WebSocket'ini aynı session / conversation ID ile aç
+                disconnectTaskStream = connectTaskStream(conversationId, (status) => {
+                    upsertTask(status);
+                });
+
                 await chatStream(userMessage, conversationId, (event) => {
                     if (event.type === "token") {
                         appendMessageContent(conversationId, assistantMessageId, event.data.text);
@@ -99,6 +154,14 @@ export function MessageInput({
                         if (sources.length > 0) {
                             setMessageSources(conversationId, assistantMessageId, sources);
                         }
+                    } else if (event.type === "done") {
+                        // Capture latency and token count from done event
+                        const latency = event.data?.latency_ms;
+                        const tokens = event.data?.token_count;
+                        setMessageMeta(conversationId, assistantMessageId, {
+                            latency_ms: latency,
+                            token_count: tokens,
+                        });
                     } else if (event.type === "error") {
                         appendMessageContent(conversationId, assistantMessageId, `\n\n**Hata:** ${event.data.error}`);
                     }
@@ -107,10 +170,13 @@ export function MessageInput({
                 console.error("Stream failed:", error);
                 appendMessageContent(conversationId, assistantMessageId, "\n\n**Bağlantı Hatası:** API'ye erişilemiyor. Lütfen backend'in açık olduğundan emin olun.");
             } finally {
+                if (disconnectTaskStream) {
+                    disconnectTaskStream();
+                }
                 setIsGenerating(false);
             }
         },
-        [addMessageWithId, appendMessageContent, setMessageSources, setIsGenerating, useRag]
+        [addMessageWithId, appendMessageContent, setMessageSources, setMessageMeta, setIsGenerating, useRag, settings.departmentId, upsertTask]
     );
 
     const handleSend = useCallback(async () => {
@@ -128,7 +194,10 @@ export function MessageInput({
             setIsUploading(true);
             try {
                 await uploadFiles(attachedFiles);
-                appendedFilesText = `\n\n[Sisteme yeni yüklenen dosyalar: ${attachedFiles.map(f => f.name).join(", ")}]`;
+                const newNames = attachedFiles.map((f) => f.name);
+                appendedFilesText = `\n\n[Sisteme yeni yüklenen dosyalar: ${newNames.join(", ")}]`;
+                // Track uploaded files so user knows they don't need to re-upload
+                setUploadedFileNames((prev) => [...new Set([...prev, ...newNames])]);
                 setAttachedFiles([]);
             } catch (error) {
                 console.error("File upload failed:", error);
@@ -139,6 +208,12 @@ export function MessageInput({
         }
 
         const finalMessage = message + appendedFilesText;
+        const mcpTag = useMcp
+            ? `[MCP${selectedMcpPreset ? `:${selectedMcpPreset}` : ""}] `
+            : "";
+        const backendMessage = webSearchOnly
+            ? `[WEB_ONLY] ${mcpTag}${finalMessage}`
+            : `${mcpTag}${finalMessage}`;
 
         addMessage(convId, {
             role: "user",
@@ -150,7 +225,7 @@ export function MessageInput({
             textareaRef.current.style.height = "auto";
         }
 
-        streamResponse(convId, finalMessage);
+        streamResponse(convId, backendMessage);
     }, [
         input,
         isGenerating,
@@ -160,6 +235,9 @@ export function MessageInput({
         addMessage,
         attachedFiles,
         streamResponse,
+        webSearchOnly,
+        useMcp,
+        selectedMcpPreset,
     ]);
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -184,24 +262,99 @@ export function MessageInput({
           transition-all duration-300 focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary/40
         "
             >
+                {/* Mode toggles inside the input card */}
+                <div className="flex items-center gap-2 px-2 pt-1 pb-0.5">
+                    <span className="text-[11px] font-medium text-muted-foreground/70">
+                        Mod:
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const next = !webSearchOnly;
+                            setWebSearchOnly(next);
+                            // Web arama modu açıkken RAG'in de etkin olması gerekiyor (web_search tool'u için)
+                            if (next && !useRag) {
+                                setUseRag(true);
+                            }
+                        }}
+                        className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full border transition-all duration-200 ${
+                            webSearchOnly
+                                ? "bg-primary/10 border-primary/40 text-primary hover:bg-primary/15"
+                                : "border-border/50 text-foreground/60 hover:text-foreground hover:bg-accent"
+                        }`}
+                    >
+                        <Globe size={13} />
+                        <span>İnternette Ara</span>
+                        {webSearchOnly && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                        )}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const next = !useRag;
+                            setUseRag(next);
+                        }}
+                        className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full border transition-all duration-200 ${
+                            useRag
+                                ? "bg-primary/10 border-primary/40 text-primary hover:bg-primary/15"
+                                : "border-border/50 text-foreground/60 hover:text-foreground hover:bg-accent"
+                        }`}
+                    >
+                        <BookOpen size={13} />
+                        <span>RAG</span>
+                        {useRag && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                        )}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const next = !useMcp;
+                            setUseMcp(next);
+                            if (!next) {
+                                setSelectedMcpPreset(null);
+                            }
+                        }}
+                        className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full border transition-all duration-200 ${
+                            useMcp
+                                ? "bg-primary/10 border-primary/40 text-primary hover:bg-primary/15"
+                                : "border-border/50 text-foreground/60 hover:text-foreground hover:bg-accent"
+                        }`}
+                    >
+                        <Cpu size={13} />
+                        <span>MCP</span>
+                        {useMcp && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                        )}
+                    </button>
+                </div>
                 {/* Attached Files */}
                 {attachedFiles.length > 0 && (
-                    <div className="flex flex-wrap gap-2 px-2 pt-1 pb-1">
-                        {attachedFiles.map((file, index) => (
-                            <div
-                                key={`${file.name}-${index}`}
-                                className="flex items-center gap-1.5 bg-muted/50 border border-border/60 rounded-lg px-2.5 py-1.5 text-[12px] font-medium text-foreground/80 group/chip animate-fade-in-up"
-                            >
-                                <FileText size={14} className="text-primary/70 flex-shrink-0" />
-                                <span className="max-w-[120px] truncate">{file.name}</span>
-                                <button
-                                    onClick={() => removeFile(index)}
-                                    className="ml-0.5 p-0.5 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                    <div className="flex flex-wrap gap-4 px-3 pt-3 pb-2">
+                        {attachedFiles.map((file, index) => {
+                            const extension = file.name.split('.').pop()?.toUpperCase() || 'FILE';
+                            return (
+                                <div
+                                    key={`${file.name}-${index}`}
+                                    className="relative flex items-center gap-3 bg-transparent border border-border/60 rounded-[18px] p-2 min-w-[200px] max-w-[280px] group animate-fade-in-up"
                                 >
-                                    <X size={12} />
-                                </button>
-                            </div>
-                        ))}
+                                    <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-[#d9534f] text-white flex-shrink-0 shadow-sm">
+                                        <FileText size={22} strokeWidth={2} />
+                                    </div>
+                                    <div className="flex flex-col flex-grow min-w-0 pr-4">
+                                        <span className="text-[14px] font-semibold truncate text-foreground/90">{file.name}</span>
+                                        <span className="text-[12px] text-muted-foreground font-medium">{extension}</span>
+                                    </div>
+                                    <button
+                                        onClick={() => removeFile(index)}
+                                        className="absolute top-[-6px] right-[-6px] flex items-center justify-center w-[22px] h-[22px] rounded-full bg-foreground text-background shadow-md hover:scale-105 transition-transform"
+                                    >
+                                        <X size={12} strokeWidth={3} />
+                                    </button>
+                                </div>
+                            );
+                        })}
                     </div>
                 )}
 
@@ -288,30 +441,56 @@ export function MessageInput({
                         )}
                     </div>
                 </div>
-
-                <div className="flex items-center gap-2 justify-between px-2 pt-0.5 pb-1">
-                    <div className="flex items-center gap-2">
-                        <button className="flex items-center gap-1.5 text-[11px] font-medium text-foreground/60 hover:text-foreground px-2.5 py-1 rounded-full border border-border/50 hover:bg-accent transition-colors">
-                            <Globe size={13} />
-                            <span>İnternette Ara</span>
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => setUseRag(!useRag)}
-                            className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full border transition-all duration-200 ${useRag
-                                ? "bg-primary/10 border-primary/40 text-primary hover:bg-primary/15"
-                                : "border-border/50 text-foreground/60 hover:text-foreground hover:bg-accent"
-                                }`}
-                        >
-                            <BookOpen size={13} />
-                            <span>RAG</span>
-                            {useRag && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                            )}
-                        </button>
-                    </div>
-                </div>
             </div>
+
+            {/* Uploaded files indicator */}
+            {uploadedFileNames.length > 0 && (
+                <div className="flex items-center justify-center gap-2 mt-2 text-[11px] text-muted-foreground/70 font-medium">
+                    <FileText size={12} className="text-primary/60" />
+                    <span>Yüklü dosyalar: {uploadedFileNames.join(", ")}</span>
+                    <span className="text-muted-foreground/40">— tekrar yüklemenize gerek yok</span>
+                    <button
+                        onClick={() => setUploadedFileNames([])}
+                        className="ml-1 p-0.5 rounded-full hover:bg-accent transition-colors"
+                    >
+                        <X size={10} />
+                    </button>
+                </div>
+            )}
+
+            {useMcp && (
+                <div className="mt-2 flex flex-wrap gap-2 px-2">
+                    {MCP_PRESETS.map((preset) => (
+                        <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => {
+                                setSelectedMcpPreset(preset.id);
+                                setInput(preset.suggestedPrompt);
+                                setTimeout(() => {
+                                    adjustHeight();
+                                    textareaRef.current?.focus();
+                                }, 10);
+                            }}
+                            className={`flex items-start gap-2 px-3 py-2 rounded-2xl border text-left transition-all duration-200 text-[11px] ${
+                                selectedMcpPreset === preset.id
+                                    ? "bg-primary/10 border-primary/40 text-primary-foreground/90 dark:text-primary-foreground"
+                                    : "border-border/50 text-foreground/70 hover:bg-accent"
+                            }`}
+                        >
+                            <Cpu size={14} className="mt-0.5 text-primary" />
+                            <div className="flex flex-col">
+                                <span className="font-semibold text-[11px]">
+                                    {preset.label}
+                                </span>
+                                <span className="text-[10px] text-muted-foreground/80">
+                                    {preset.description}
+                                </span>
+                            </div>
+                        </button>
+                    ))}
+                </div>
+            )}
 
             <p className="text-[11px] text-center text-muted-foreground/60 mt-3 font-medium tracking-wide">
                 Yapay zeka hata yapabilir. Lütfen önemli bilgileri doğrulayın.

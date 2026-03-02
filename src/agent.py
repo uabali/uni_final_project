@@ -50,36 +50,34 @@ _CHAT_PATTERNS = {
     "iyi gunler", "gorusuruz", "hosca kal", "bye",
 }
 
-SYSTEM_PROMPT = """\
-You are a RAG (Retrieval-Augmented Generation) assistant with access to three tools.
+SYSTEM_PROMPT = """You are a RAG (Retrieval-Augmented Generation) assistant.
 
-## TOOL SELECTION RULES (order matters)
+TOOLS (priority order)
+- search_documents: Varsayılan ilk adım. Ders notları, PDF içerikleri, kavramlar, tanımlar, kişi/olay vb. tüm bilgi soruları için önce bunu kullan.
+- web_search: Sadece search_documents yeterli değilse (low/none) veya soru canlı veri gerektiriyorsa (hava durumu, döviz, haber, skor, vb.) kullan.
+- calculator: Matematiksel ifadeler ve hesaplamalar için.
+- Hiçbir tool: Selamlaşma, küçük konuşma veya takip soruları ("emin misin", "devam", "??" vb.) için doğrudan cevap ver.
+- MCP tool'ları: Kullanıcı mesajında [MCP] veya [MCP:... ] öneki varsa, dosya sistemi / Postgres / hafıza gibi MCP araçlarını kullanmaya özellikle istekli ol.
 
-1. **search_documents** — Default FIRST step for knowledge questions \
-(people, technical topics, lecture notes, definitions, concepts).
-2. **web_search** — Use when:
-   - search_documents is insufficient (low confidence / no relevant info), OR
-   - the question explicitly requires live information \
-(weather, breaking news, live scores, exchange rates, prayer times).
-3. **calculator** — Use for arithmetic or mathematical expressions.
-4. **No tool** — For simple greetings, small talk, or conversational follow-ups \
-(e.g. "emin misin", "tesekkurler", "devam et"), reply directly without calling any tool.
+LOCAL DOC CHUNKS
+- search_documents çıktısındaki [CHUNK N] bölümlerini önce alaka açısından değerlendir.
+- Genel/soyut bir soruysa ve chunk'lar konu dışı görünüyorsa, genel bilgiden cevap ver ve chunk'ları alıntılama.
+- [DOCUMENT_FILTER] varsa, kullanıcının belirli bir dosyayı sorduğu anlamına gelir; mümkün olduğunca o dosyadan gelen chunk'lara odaklan.
 
-## ANSWERING AFTER TOOL RESULTS
+ANSWER STYLE
+- Dil: Türkçe, doğru karakterlerle (ş, ç, ğ, ı, ö, ü).
+- Uzunluk: Tercihen 2–4 net cümle, gerekiyorsa kısa madde işaretleri.
+- Atıf: Sadece gerçekten kullandığın chunk'lardan yararlandıysan, cevabın EN SONUNDA tek satırda yaz. Örnek:
+  - Yerel dokümanlar: "Kaynaklar: [CHUNK 1] architecture.pdf p.3"
+  - Web: "Web Kaynakları: url1, url2"
+- Sadece sohbet, kod veya genel bilgi cevapları için asla kaynak yazma.
+- Eğer belirli bir doküman sorulmuşsa ama tool sonucu cevabı içermiyorsa, tam olarak şöyle yanıtla: "Bilgi bulunamadı."
 
-- **Language**: Turkish (use proper Turkish characters: ş, ç, ğ, ı, ö, ü).
-- **Length**: Prefer 2-4 clear sentences. Use bullet points only when the question asks for a list or comparison; otherwise write in prose. Do not repeat the same idea or add filler.
-- **Citation**: Keep short. search_documents: "Kaynaklar: [CHUNK N] dosya.pdf p.X" (only chunks you used). web_search: "Web Kaynaklari: url1, url2" (max 3 URLs).
-- **No hallucination**: If the tool result does not contain the answer, respond exactly: "Bilgi bulunamadi."
-- **Stop**: End as soon as the answer and citation are complete. No closing summaries or sign-offs.
+FOLLOW-UPS
+- "emin misin", "neden", "biraz daha açıkla", "??" gibi takip sorularında önceki mesajları bağlam olarak kullan, "hangi konuda?" diye sorma.
+- Bu tip takipler için ekstra tool çağırman çoğu durumda gereksizdir; önce mevcut bağlamdan açıklamayı dene.
 
-## IMPORTANT
-
-- Do NOT answer from training data. ALWAYS use a tool first for knowledge questions.
-- For conversational replies (thanks, confirmation, follow-ups), respond naturally without tools.
-- If local retrieval is insufficient, prefer web_search before saying "Bilgi bulunamadi."
-- NEVER fabricate sources. Keep technical terms as-is (API, HTTP, Scrum, etc.).
-"""
+Güvenilir olmayan veya konu dışı chunk'lara dayanarak cevap uydurma; gerekirse genel bilgiden kısa bir cevap ver veya "Bilgi bulunamadı." de."""
 
 
 class AgentState(TypedDict):
@@ -200,8 +198,24 @@ def _is_chat_query(query: str) -> bool:
 
 
 def _build_forced_tool_call(query: str) -> dict | None:
-    q = (query or "").strip()
+    raw = (query or "").strip()
+    if not raw:
+        return None
+
+    # Özel frontend modu: [WEB_ONLY] prefix'i varsa her durumda web_search çağır
+    WEB_ONLY_PREFIX = "[WEB_ONLY]"
+    web_only = False
+    if raw.startswith(WEB_ONLY_PREFIX):
+        web_only = True
+        q = raw[len(WEB_ONLY_PREFIX):].strip()
+    else:
+        q = raw
+
     if not q:
+        return None
+
+    # Eger query uzunlugu cok kisaysa veya sadece noktalama isareti ise tool cagirma
+    if len(q) < 3 or all(c in "?!.,;- " for c in q):
         return None
 
     ql = q.lower()
@@ -209,6 +223,9 @@ def _build_forced_tool_call(query: str) -> dict | None:
     # Selamlama veya chat patternleri → tool çağırma
     if ql in {"merhaba", "selam", "hello", "hi"} or ql in _CHAT_PATTERNS:
         return None
+
+    if web_only:
+        return {"name": "web_search", "args": {"query": q}}
 
     if _is_live_info_query(q):
         return {"name": "web_search", "args": {"query": q}}
@@ -263,7 +280,7 @@ def _build_fast_web_answer(tool_output: str) -> str | None:
 # ── Graph Builder ───────────────────────────────────────────
 
 
-def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | None = None):
+def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: list | None = None):
     """
     Verilen LLM'i ve tool listesini kullanarak derlenmiş bir LangGraph
     ReAct agent döndürür.
@@ -414,7 +431,7 @@ def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | Non
         last_message = messages[-1]
 
         # Deterministic fallback:
-        # search_documents sonucu yetersizse (low/none), LLM kararini beklemeden web_search'e gec.
+        # search_documents sonucu yetersizse (none), LLM kararini beklemeden web_search'e gec.
         enable_local_web_fallback = os.getenv("AGENT_ENABLE_LOCAL_WEB_FALLBACK", "true").lower() == "true"
         if (
             enable_local_web_fallback
@@ -424,7 +441,7 @@ def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | Non
             local_status = _extract_local_search_status(
                 last_message.content if isinstance(last_message.content, str) else ""
             )
-            if local_status in {"low", "none"}:
+            if local_status in {"none"}:
                 user_query = _get_latest_user_query(messages)
                 if user_query:
                     return {
@@ -558,5 +575,119 @@ def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | Non
     graph.add_edge("tools", "react_agent")
     graph.add_edge("response", END)
     graph.add_edge("chat", END)
+
+    return graph.compile()
+
+
+class SupervisorState(TypedDict):
+    """Supervisor grafi icin state; su an sadece mesaj listesini tasir."""
+
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+
+def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | None = None):
+    """
+    Supervisor agent: intent routing + sub-agent delegation.
+
+    - ResearchAgent: RAG + web_search + calculator (bilgi edinme)
+    - ExecutionAgent: MCP tabanlı eylemler (dosya sistemi, Postgres, hafıza, vb.)
+    """
+
+    research_graph = build_research_agent_graph(llm, memory=memory, tools=tools)
+
+    # ExecutionAgent için MCP odaklı tool listesi
+    exec_tool_names = {
+        "read_file",
+        "list_directory",
+        "write_file",
+        "execute_python",
+        "run_bash",
+        "query_postgres",
+        "memory_search",
+    }
+    all_tools = get_all_tools()
+    exec_tools = [t for t in all_tools if t.name in exec_tool_names]
+
+    exec_llm_with_tools = llm.bind_tools(exec_tools)
+    tracer = get_tracer()
+
+    def execution_agent_node(
+        state: SupervisorState,
+        config: RunnableConfig | None = None,
+    ) -> dict:
+        """
+        Basit ExecutionAgent:
+        - Sadece MCP tabanlı tool'ları bağlar.
+        - Aynı ReAct benzeri döngüyü uygular (tool_calls → ToolNode → tekrar).
+        """
+        messages = list(state["messages"])
+
+        # Kısa, eylem odaklı system prompt
+        exec_system = SystemMessage(
+            content=(
+                "You are an Execution Agent responsible for performing actions via MCP tools.\n"
+                "Use the available tools to inspect files, run read-only queries and execute safe operations.\n"
+                "Always explain what you did and what you found. Do not invent results."
+            )
+        )
+        has_system = any(isinstance(m, SystemMessage) for m in messages)
+        if not has_system:
+            messages.insert(0, exec_system)
+
+        tracer.trace_node_start("execution_agent", {"message_count": len(messages)})
+        response = exec_llm_with_tools.invoke(
+            messages,
+            config={
+                "run_name": "execution_agent_step",
+                "tags": ["agent", "execution"],
+            },
+        )
+        tracer.trace_node_end(
+            "execution_agent",
+            {"has_tool_calls": bool(getattr(response, "tool_calls", None))},
+        )
+
+        return {"messages": [response]}
+
+    graph = StateGraph(SupervisorState)
+
+    def supervisor_entry(state: SupervisorState) -> dict:
+        return {"messages": list(state["messages"])}
+
+    def route_to_agent(state: SupervisorState) -> str:
+        """
+        Basit routing:
+        - Kullanıcı mesajı [MCP] veya [MCP:...] ile başlıyorsa → ExecutionAgent
+        - Aksi durumda → ResearchAgent
+        """
+        messages = list(state["messages"])
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                text = (msg.content or "").strip()
+                if text.startswith("[MCP]") or text.startswith("[MCP:"):
+                    return "execution"
+                break
+        return "research"
+
+    def research_agent_node(
+        state: SupervisorState,
+        config: RunnableConfig | None = None,
+    ) -> dict:
+        sub_state = {"messages": list(state["messages"])}
+        result = research_graph.invoke(sub_state, config=config or {})
+        return {"messages": result.get("messages", [])}
+
+    graph.add_node("supervisor_entry", supervisor_entry)
+    graph.add_node("research_agent", research_agent_node)
+    graph.add_node("execution_agent", execution_agent_node)
+
+    graph.set_entry_point("supervisor_entry")
+    graph.add_conditional_edges(
+        "supervisor_entry",
+        route_to_agent,
+        {"research": "research_agent", "execution": "execution_agent"},
+    )
+    graph.add_edge("research_agent", END)
+    graph.add_edge("execution_agent", END)
 
     return graph.compile()
