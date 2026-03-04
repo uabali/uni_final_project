@@ -22,7 +22,7 @@ services:
     volumes:
       - ./:/app
     working_dir: /app
-    command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: [ "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000" ]
 
   vllm:
     image: vllm/vllm-openai:latest
@@ -36,10 +36,10 @@ services:
       resources:
         reservations:
           devices:
-            - capabilities: ["gpu"]
+            - capabilities: [ "gpu" ]
 
-  # embedding: PDF'de port 8002, ancak orchestrator şu an HuggingFace BGE-m3 kullanıyor.
-  # Embedding servisi entegre edilirse bu container'ı tekrar ekleyin.
+  # embedding: Port 8002 in the architecture PDF, but the orchestrator currently uses HuggingFace BGE-m3.
+  # Re-add this container if a dedicated embedding service is integrated.
 
   qdrant:
     image: qdrant/qdrant
@@ -51,7 +51,7 @@ services:
     volumes:
       - ./qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "grep -q ':18BD' /proc/net/tcp /proc/net/tcp6"]
+      test: [ "CMD-SHELL", "grep -q ':18BD' /proc/net/tcp /proc/net/tcp6" ]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -96,10 +96,9 @@ services:
       - "4000:4000"
     volumes:
       - ./config/litellm-config.yaml:/app/litellm-config.yaml
-    command: ["--config", "/app/litellm-config.yaml"]
-
-  # mcp-server: ghcr.io/fastmcp/fastmcp registry denied. MCP opsiyonel; orchestrator local tools ile calisir.
-  # MCP eklemek icin kendi MCP server image'inizi build edin.
+    command: [ "--config", "/app/litellm-config.yaml" ]
+  # mcp-server: ghcr.io/fastmcp/fastmcp registry denied. MCP is optional; orchestrator works with local tools.
+  # To add MCP, build your own MCP server image.
 
 networks:
   default:

@@ -3,16 +3,18 @@ from __future__ import annotations
 """
 Policy engine — department × MCP permission matrix & tool ACL.
 
-Bu modül, architecture dokümanındaki "DEPARTMAN × MCP YETKİ MATRİSİ"ni kodlar.
-Amaç:
-- Her departman için hangi MCP domain'lerine erişilebileceğini tanımlamak
-- Tool ismine bakarak (github_*, jira_*, ldap_*, finance_*) ilgili domain'i
-  çıkarmak ve departman yetkisini kontrol etmek
+This module encodes the "DEPARTMENT × MCP PERMISSION MATRIX" from the
+architecture document.
 
-Notlar:
-- Gerçek MCP tool isimleri FastMCP server tarafında tanımlanır; burada isim
-  üzerinden sezgisel (prefix / substring) eşleştirme yapılır.
-- Varsayılan matrix, plan dokümanındaki tabloya göre:
+Purpose:
+- Define which MCP domains each department can access
+- Check tool names (github_*, jira_*, ldap_*, finance_*) to infer the
+  corresponding domain and verify department authorization
+
+Notes:
+- Actual MCP tool names are defined on the FastMCP server side; here we use
+  heuristic matching (prefix / substring) against tool names.
+- Default matrix is based on the plan document table:
 
   Engineering:
     - GitHub MCP      → RW
@@ -78,7 +80,7 @@ def _normalize_dept(department_id: str | None) -> str:
     if not department_id:
         return get_default_department_id()
     name = department_id.strip().lower()
-    # Basit eşleştirme: "engineering", "Engineering", "ENG" gibi varyantlar
+    # Simple matching: handles variants like "engineering", "Engineering", "ENG"
     if name in {"eng", "engineering"}:
         return "engineering"
     if name in {"pm", "project", "project_mgmt", "project-management"}:
@@ -87,15 +89,15 @@ def _normalize_dept(department_id: str | None) -> str:
         return "hr"
     if name in {"fin", "finance", "finans"}:
         return "finance"
-    # Bilinmeyen departmanlar için default namespace
+    # Default namespace for unknown departments
     return name
 
 
 def _infer_mcp_domain(tool_name: str) -> Optional[str]:
     """
-    Tool ismine bakarak hangi MCP domain'ine ait olabileceğini tahmin eder.
+    Infers which MCP domain a tool might belong to based on its name.
 
-    Örnek:
+    Examples:
     - github_list_repos → "github"
     - jira_create_issue → "jira"
     - confluence_search → "jira"
@@ -122,12 +124,12 @@ def _infer_mcp_domain(tool_name: str) -> Optional[str]:
 @dataclass
 class PolicyEngine:
     """
-    Basit department × MCP domain policy engine.
+    Simple department × MCP domain policy engine.
 
-    Şu an için sadece:
-      - domain düzeyinde izin (var / yok)
-      - permission string'i ("ro" / "rw") metadata amaçlı; yazma/okuma ayrımı
-        MCP tarafındaki tool tasarımına bırakılmıştır.
+    Currently only supports:
+      - Domain-level permission (exists / does not exist)
+      - Permission string ("ro" / "rw") for metadata purposes; read/write
+        distinction is left to MCP-side tool design.
     """
 
     matrix: Dict[str, Dict[str, Optional[str]]]
@@ -136,8 +138,8 @@ class PolicyEngine:
         dept_key = _normalize_dept(department_id)
         dept_row = self.matrix.get(dept_key)
         if not dept_row:
-            # Bilinmeyen departmanlar için engellemek yerine izin vermek daha az sürprizli;
-            # gerçek kurumsal senaryoda burası sıkılaştırılabilir.
+            # For unknown departments, allowing is less surprising than blocking;
+            # in a real enterprise scenario, this should be tightened.
             return True
         perm = dept_row.get(domain)
         return bool(perm)
@@ -145,7 +147,7 @@ class PolicyEngine:
     def can_call_tool(self, department_id: str, role: str, tool_name: str) -> bool:
         domain = _infer_mcp_domain(tool_name)
         if domain is None:
-            # Domain ile eşleştirilemeyen MCP tool'ları policy açısından nötr kabul edilir.
+            # MCP tools that cannot be mapped to a domain are considered policy-neutral.
             return True
         return self.can_use_domain(department_id, domain)
 
@@ -154,9 +156,8 @@ _POLICY_ENGINE: Optional[PolicyEngine] = None
 
 
 def get_policy_engine() -> PolicyEngine:
-    """Global PolicyEngine instance'ını döner (şimdilik yalnızca default matrix ile)."""
+    """Returns the global PolicyEngine instance (currently with default matrix only)."""
     global _POLICY_ENGINE
     if _POLICY_ENGINE is None:
         _POLICY_ENGINE = PolicyEngine(matrix=_DEFAULT_MATRIX)
     return _POLICY_ENGINE
-

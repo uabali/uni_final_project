@@ -1,11 +1,11 @@
 """
 Agentic RAG — CLI entry point.
 
-Başlatma sırası:
-  1. Embedding modeli, vectorstore, BM25, reranker gibi heavy objeleri yükler.
-  2. Bu objeleri tool registry'ye kaydeder (src/tools.register_rag_components).
-  3. LLM'i oluşturur ve LangGraph ReAct agent graph'ını derler.
-  4. Kullanıcıdan sorgu alıp agent'a yönlendirir; agent kendi tool seçimini yapar.
+Startup sequence:
+  1. Loads heavy objects like embedding model, vectorstore, BM25, reranker.
+  2. Registers these objects in the tool registry (src/tools.register_rag_components).
+  3. Creates the LLM and compiles the LangGraph ReAct agent graph.
+  4. Receives queries from the user and routes them to the agent; the agent selects tools on its own.
 """
 
 import re
@@ -54,7 +54,7 @@ def main():
     turn_index = 0
     while True:
         try:
-            query = input("Kullanici: ").strip()
+            query = input("User: ").strip()
             if not query:
                 continue
             if query.lower() in ("exit", "quit", "cikis"):
@@ -81,8 +81,8 @@ def main():
             final_msg = result["messages"][-1]
             print(final_msg.content)
 
-            # Deterministik kaynak çıktısı:
-            # ToolMessage içindeki CHUNK satırlarını topla, final cevapta cite edilenleri öncelikle yazdır.
+            # Deterministic source output:
+            # Collect CHUNK lines from ToolMessage, prioritize those cited in the final answer.
             source_lines: list[str] = []
             source_by_chunk_id: dict[int, str] = {}
             web_source_lines: list[str] = []
@@ -100,9 +100,9 @@ def main():
                             web_source_lines.append(line.replace("Source: ", ""))
 
             final_text = final_msg.content if isinstance(final_msg.content, str) else ""
-            final_has_source_section = ("Kaynaklar:" in final_text) or ("Web Kaynaklari:" in final_text)
+            final_has_source_section = ("Sources:" in final_text) or ("Web Sources:" in final_text)
 
-            # Model zaten kendi kaynak bölümünü yazdıysa tekrar basma (duplicate önleme).
+            # If the model already wrote its own source section, don't print again (duplicate prevention).
             if not final_has_source_section:
                 cited_chunk_ids = [
                     int(m.group(1))
@@ -117,11 +117,11 @@ def main():
                             selected_source_lines.append(line)
 
                 if selected_source_lines:
-                    print("Kaynaklar:")
+                    print("Sources:")
                     for line in list(dict.fromkeys(selected_source_lines)):
                         print(f"- {line}")
                 elif web_source_lines:
-                    print("Web Kaynaklari:")
+                    print("Web Sources:")
                     for line in list(dict.fromkeys(web_source_lines))[:5]:
                         print(f"- {line}")
 

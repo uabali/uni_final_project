@@ -3,14 +3,14 @@ from __future__ import annotations
 """
 Multi-layer memory service.
 
-architecture.pdf'teki memory katmanini kod seviyesinde temsil eder:
-- Short-term buffer (Redis, session bazli sliding window)
+Represents the memory layer from architecture.pdf at the code level:
+- Short-term buffer (Redis, session-based sliding window)
 - Long-term episodic memory (Qdrant "memory" collection)
 - Entity memory (Redis hash)
-- Summary store (Postgres — uzun konusmalarin ozetleri)
+- Summary store (Postgres — summaries of long conversations)
 
-CLI senaryosunda bile session_id kavramini koruyarak ileride HTTP/GUI
-adapter'larinin ayni API'yi kullanmasini hedefler.
+Preserves the session_id concept even in CLI scenarios so that future
+HTTP/GUI adapters can use the same API.
 """
 
 import json
@@ -32,7 +32,7 @@ logger = logging.getLogger("rag.memory")
 
 @dataclass
 class MemoryConfig:
-    """Memory konfigürasyonu. ENV değişkenleri runtime'da okunur (dotenv sonrası)."""
+    """Memory configuration. ENV variables are read at runtime (after dotenv)."""
     redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0"))
     short_term_ttl_seconds: int = field(default_factory=lambda: int(os.getenv("MEMORY_SHORT_TERM_TTL", "7200")))
     short_term_max_turns: int = field(default_factory=lambda: int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "20")))
@@ -46,8 +46,8 @@ class MemoryConfig:
 
 def is_memory_multi_tenant_strict() -> bool:
     """
-    MEMORY_MULTI_TENANT_STRICT=true ise hafiza (Redis + episodic) katmaninda
-    departman bazli anahtar/collection kullan.
+    If MEMORY_MULTI_TENANT_STRICT=true, use department-based key/collection
+    in the memory (Redis + episodic) layer.
     """
     return os.getenv("MEMORY_MULTI_TENANT_STRICT", "false").strip().lower() == "true"
 
@@ -61,7 +61,7 @@ def _effective_department_id() -> str:
 
 def _with_department_prefix(key: str) -> str:
     """
-    Strict modda Redis anahtarlarini departman ile prefix'ler.
+    In strict mode, prefixes Redis keys with department.
     """
     if not is_memory_multi_tenant_strict():
         return key
@@ -71,9 +71,9 @@ def _with_department_prefix(key: str) -> str:
 
 class ShortTermMemory:
     """
-    Redis tabanli sliding window:
+    Redis-based sliding window:
     - key: session_id
-    - value: JSON serialized BaseMessage listesi
+    - value: JSON-serialized BaseMessage list
     """
 
     def __init__(self, client: redis.Redis, cfg: MemoryConfig):
@@ -89,7 +89,7 @@ class ShortTermMemory:
             data = json.loads(raw)
         except Exception:
             return []
-        # Şu an için sadece text içerik taşıyan mesajları geri getiriyoruz.
+        # Currently we only return messages carrying text content.
         from langchain_core.messages import HumanMessage, AIMessage
 
         messages: List[BaseMessage] = []
@@ -119,7 +119,7 @@ class ShortTermMemory:
         )
 
     def get_turn_count(self, session_id: str) -> int:
-        """Session'daki mesaj sayısını döner."""
+        """Returns the number of messages in the session."""
         key = _with_department_prefix(session_id)
         raw = self._client.get(key)
         if not raw:
@@ -133,7 +133,7 @@ class ShortTermMemory:
 
 class EntityMemory:
     """
-    Kullanici/varlik bazli kalici bilgiler icin Redis hash:
+    Redis hash for persistent per-user/entity information:
     - key: f\"{entity_prefix}{entity_id}\"
     - field: arbitrary
     """
@@ -166,9 +166,9 @@ class EntityMemory:
 
 class EpisodicMemory:
     """
-    Uzun donem episodik hafiza:
-    - Qdrant icinde ayri bir collection
-    - Her entry bir Document olarak saklanir.
+    Long-term episodic memory:
+    - Stored in a separate Qdrant collection
+    - Each entry is stored as a Document.
     """
 
     def __init__(self, cfg: MemoryConfig):
@@ -177,23 +177,23 @@ class EpisodicMemory:
         from qdrant_client import QdrantClient
 
         self._client = QdrantClient(url=self._cfg.qdrant_url)
-        # Varsayilan collection icin en azindan bir kez ensure et
+        # Ensure default collection exists at least once
         self._ensure_collection_exists(self._cfg.episodic_collection)
 
     def _ensure_collection_exists(self, collection_name: str) -> None:
-        """Qdrant'ta episodic collection yoksa bos olusturur."""
+        """Creates an empty episodic collection in Qdrant if it doesn't exist."""
         from qdrant_client.models import Distance, VectorParams
 
         collections = [c.name for c in self._client.get_collections().collections]
         if collection_name not in collections:
-            # Embedding boyutunu tespit et
+            # Detect embedding dimension
             sample = self._embeddings.embed_query("test")
             dim = len(sample)
             self._client.create_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
-            print(f"Episodic memory collection olusturuldu: {collection_name}")
+            print(f"Episodic memory collection created: {collection_name}")
 
     def _get_vectorstore_for_current_department(self):
         from langchain_qdrant import QdrantVectorStore
@@ -203,7 +203,7 @@ class EpisodicMemory:
             collection_name = base
         else:
             dept = _effective_department_id()
-            # memory icin basit normalizasyon: ayni fonksiyon mantigi
+            # Simple normalization for memory: same function logic
             import re
 
             s = re.sub(r"[^a-zA-Z0-9]+", "_", dept).strip("_").lower() or "default"
@@ -249,16 +249,16 @@ CREATE INDEX IF NOT EXISTS idx_summaries_created
 
 class SummaryStore:
     """
-    Postgres tabanlı konuşma özet deposu.
+    Postgres-based conversation summary store.
 
-    Uzun konuşmalarda:
-      1. Short-term buffer dolduğunda (20+ mesaj) otomatik olarak
-         bir LLM çağrısı ile özet oluşturulur.
-      2. Özet Postgres'e kaydedilir.
-      3. Yeni konuşma turlarında ilgili özetler retrieval sırasında
-         context'e eklenir.
+    For long conversations:
+      1. When the short-term buffer fills up (20+ messages), a summary is
+         automatically generated via an LLM call.
+      2. The summary is saved to Postgres.
+      3. In new conversation turns, relevant summaries are added to the
+         context during retrieval.
 
-    Postgres bağlantısı yoksa gracefully degrade eder (no-op).
+    Gracefully degrades if Postgres connection is unavailable (no-op).
     """
 
     def __init__(self, postgres_url: str | None = None):
@@ -268,9 +268,9 @@ class SummaryStore:
         self._init_connection()
 
     def _init_connection(self) -> None:
-        """Postgres bağlantısını başlatır ve tabloyu oluşturur."""
+        """Initializes Postgres connection and creates the table."""
         if not self._postgres_url:
-            logger.info("Postgres URL tanımlı değil — SummaryStore no-op modda")
+            logger.info("Postgres URL not defined — SummaryStore in no-op mode")
             return
 
         try:
@@ -280,14 +280,14 @@ class SummaryStore:
             with self._conn.cursor() as cur:
                 cur.execute(_SUMMARY_TABLE_DDL)
             self._available = True
-            logger.info("SummaryStore Postgres bağlantısı hazır")
+            logger.info("SummaryStore Postgres connection ready")
         except ImportError:
             logger.warning(
-                "psycopg2 kurulu değil. SummaryStore no-op modda çalışacak. "
-                "Kurulum: pip install psycopg2-binary"
+                "psycopg2 not installed. SummaryStore will run in no-op mode. "
+                "Install: pip install psycopg2-binary"
             )
         except Exception as exc:
-            logger.warning(f"Postgres bağlantısı kurulamadı: {exc}. SummaryStore no-op modda.")
+            logger.warning(f"Postgres connection failed: {exc}. SummaryStore in no-op mode.")
 
     @property
     def is_available(self) -> bool:
@@ -300,7 +300,7 @@ class SummaryStore:
         turn_range: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Konuşma özetini Postgres'e kaydeder."""
+        """Saves a conversation summary to Postgres."""
         if not self._available or not self._conn:
             logger.debug(f"SummaryStore no-op: save_summary({session_id})")
             return
@@ -316,16 +316,16 @@ class SummaryStore:
                     """,
                     (session_id, summary, turn_range, meta_json),
                 )
-            logger.info(f"Özet kaydedildi: session={session_id}, turns={turn_range}")
+            logger.info(f"Summary saved: session={session_id}, turns={turn_range}")
         except Exception as exc:
-            logger.error(f"Özet kaydetme hatası: {exc}")
+            logger.error(f"Summary save error: {exc}")
 
     def load_summaries(
         self,
         session_id: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Session'a ait en son özetleri yükler."""
+        """Loads the most recent summaries for the session."""
         if not self._available or not self._conn:
             return []
 
@@ -353,11 +353,11 @@ class SummaryStore:
                 for row in rows
             ]
         except Exception as exc:
-            logger.error(f"Özet yükleme hatası: {exc}")
+            logger.error(f"Summary load error: {exc}")
             return []
 
     def delete_session_summaries(self, session_id: str) -> int:
-        """Session'a ait tüm özetleri siler."""
+        """Deletes all summaries for the session."""
         if not self._available or not self._conn:
             return 0
 
@@ -369,11 +369,11 @@ class SummaryStore:
                 )
                 return cur.rowcount
         except Exception as exc:
-            logger.error(f"Özet silme hatası: {exc}")
+            logger.error(f"Summary delete error: {exc}")
             return 0
 
     def close(self) -> None:
-        """Postgres bağlantısını kapatır."""
+        """Closes the Postgres connection."""
         if self._conn:
             try:
                 self._conn.close()
@@ -385,14 +385,14 @@ class SummaryStore:
 
 # ── Summary Generator ─────────────────────────────────────────
 
-SUMMARY_PROMPT = """Aşağıdaki konuşma geçmişinin kısa bir özetini oluştur.
-Önemli bilgileri, kararları ve bağlamı koru. Türkçe yaz.
-Maksimum 3-4 cümle.
+SUMMARY_PROMPT = """Create a brief summary of the following conversation history.
+Preserve important information, decisions, and context.
+Maximum 3-4 sentences.
 
-Konuşma geçmişi:
+Conversation history:
 {conversation}
 
-Özet:"""
+Summary:"""
 
 
 def generate_summary_if_needed(
@@ -403,17 +403,17 @@ def generate_summary_if_needed(
     llm: Any = None,
 ) -> Optional[str]:
     """
-    Short-term buffer dolduğunda (trigger_turns mesajdan fazla) otomatik
-    olarak LLM ile özet oluşturur ve Postgres'e kaydeder.
+    Automatically generates a summary via LLM when the short-term buffer
+    fills up (more than trigger_turns messages) and saves it to Postgres.
 
     Args:
         memory: MemorySystem instance
-        session_id: Mevcut session ID
-        messages: Güncel mesaj listesi
-        llm: Özet oluşturmak için kullanılacak LLM (opsiyonel)
+        session_id: Current session ID
+        messages: Current message list
+        llm: LLM to use for summary generation (optional)
 
     Returns:
-        Oluşturulan özet metni veya None
+        Generated summary text or None
     """
     turn_count = len(messages)
     trigger = memory.cfg.summary_trigger_turns
@@ -422,18 +422,18 @@ def generate_summary_if_needed(
         return None
 
     if not memory.summaries.is_available:
-        logger.debug("SummaryStore mevcut değil, özet atlanıyor")
+        logger.debug("SummaryStore not available, skipping summary")
         return None
 
-    # Konuşmayı text'e dönüştür
+    # Convert conversation to text
     conversation_lines = []
     for msg in messages:
-        prefix = "Kullanıcı" if msg.type == "human" else "Asistan"
+        prefix = "User" if msg.type == "human" else "Assistant"
         content = (getattr(msg, "content", "") or "")[:300]
         conversation_lines.append(f"{prefix}: {content}")
     conversation_text = "\n".join(conversation_lines)
 
-    # LLM ile özet oluştur
+    # Generate summary with LLM
     if llm is not None:
         try:
             from langchain_core.messages import HumanMessage
@@ -441,14 +441,14 @@ def generate_summary_if_needed(
             result = llm.invoke([HumanMessage(content=prompt)])
             summary = getattr(result, "content", str(result))
         except Exception as exc:
-            logger.warning(f"LLM ile özet oluşturulamadı: {exc}")
-            # Fallback: basit metin özeti
-            summary = f"Konuşma ({turn_count} mesaj): {conversation_text[:200]}..."
+            logger.warning(f"Failed to generate summary with LLM: {exc}")
+            # Fallback: simple text summary
+            summary = f"Conversation ({turn_count} messages): {conversation_text[:200]}..."
     else:
-        # LLM yoksa basit truncation
-        summary = f"Konuşma ({turn_count} mesaj): {conversation_text[:300]}..."
+        # No LLM available, simple truncation
+        summary = f"Conversation ({turn_count} messages): {conversation_text[:300]}..."
 
-    # Postgres'e kaydet
+    # Save to Postgres
     turn_range = f"1-{turn_count}"
     memory.summaries.save_summary(
         session_id=session_id,
@@ -474,7 +474,7 @@ class MemorySystem:
     def from_env(cls, cfg: Optional[MemoryConfig] = None) -> "MemorySystem":
         cfg = cfg or MemoryConfig()
         redis_client = redis.Redis.from_url(cfg.redis_url, socket_connect_timeout=5)
-        redis_client.ping()  # Fail-fast: baglanti sorununu erken yakala
+        redis_client.ping()  # Fail-fast: catch connection issues early
         short_term = ShortTermMemory(redis_client, cfg)
         entity = EntityMemory(redis_client, cfg)
         episodic = EpisodicMemory(cfg)
@@ -491,34 +491,34 @@ def inject_memory_context(
     messages: Sequence[BaseMessage],
 ) -> Sequence[BaseMessage]:
     """
-    Short-term buffer + episodik + entity + summary bilgilerini system prompt'a enjekte eder.
+    Injects short-term buffer + episodic + entity + summary information into the system prompt.
     """
     short_history = memory.short_term.load(session_id)
     episodic_docs = memory.episodic.search(user_query, k=3)
     entity_data = memory.entity.load(entity_id) if entity_id else {}
 
-    # Postgres'ten ilgili özetleri yükle
+    # Load relevant summaries from Postgres
     past_summaries = memory.summaries.load_summaries(session_id, limit=3)
 
     context_lines: List[str] = []
 
-    # Geçmiş konuşma özetleri (uzun dönem)
+    # Past conversation summaries (long-term)
     if past_summaries:
-        context_lines.append("Gecmis konusma ozetleri:")
+        context_lines.append("Past conversation summaries:")
         for s in past_summaries:
             context_lines.append(f"- [{s.get('turn_range', '?')}] {s['summary']}")
 
     if short_history:
-        context_lines.append("\nKisa donem hafiza (son konusmalar):")
+        context_lines.append("\nShort-term memory (recent conversations):")
         for msg in short_history[-5:]:
-            prefix = "KULLANICI" if msg.type == "human" else "ASISTAN"
+            prefix = "USER" if msg.type == "human" else "ASSISTANT"
             context_lines.append(f"- {prefix}: {msg.content}")
     if episodic_docs:
-        context_lines.append("\nGecmis episodik anilar:")
+        context_lines.append("\nPast episodic memories:")
         for doc in episodic_docs:
             context_lines.append(f"- {doc.page_content[:120]}...")
     if entity_data:
-        context_lines.append("\nVarlik bilgileri:")
+        context_lines.append("\nEntity information:")
         for k, v in entity_data.items():
             context_lines.append(f"- {k}: {v}")
 
@@ -528,28 +528,28 @@ def inject_memory_context(
     from langchain_core.messages import SystemMessage
 
     injected = SystemMessage(
-        content="Hafiza baglamin:\n" + "\n".join(context_lines),
+        content="Memory context:\n" + "\n".join(context_lines),
     )
     return [injected, *messages]
 
 
-ENTITY_EXTRACT_PROMPT = """Konusmadan kullanici hakkinda kalici bilgileri cikar.
-Ornek: meslek, ilgi alanlari, tercihler, ad, yasadigi yer vb.
-Sadece acikca soylenen veya cikarilabilecek gercekleri JSON olarak dondur.
-Format: {"key": "value", ...} — key'ler kucuk harf, tire ile (ornek: favorite_language).
-Eger cikarilacak bilgi yoksa bos obje {} dondur.
+ENTITY_EXTRACT_PROMPT = """Extract persistent information about the user from the conversation.
+Examples: profession, interests, preferences, name, location, etc.
+Return only explicitly stated or clearly inferable facts as JSON.
+Format: {{"key": "value", ...}} — keys should be lowercase with hyphens (e.g. favorite_language).
+If there is no information to extract, return an empty object {{}}.
 
-Konusma:
+Conversation:
 {conversation}
 
 JSON:"""
 
 
 def _extract_entity_facts(messages: Sequence[BaseMessage], llm: Any) -> Dict[str, Any]:
-    """Konusmadan kullanici hakkinda entity fact'leri cikarir."""
+    """Extracts entity facts about the user from the conversation."""
     lines = []
     for msg in messages:
-        prefix = "Kullanici" if msg.type == "human" else "Asistan"
+        prefix = "User" if msg.type == "human" else "Assistant"
         content = (getattr(msg, "content", "") or "")[:500]
         lines.append(f"{prefix}: {content}")
     text = "\n".join(lines)
@@ -561,14 +561,14 @@ def _extract_entity_facts(messages: Sequence[BaseMessage], llm: Any) -> Dict[str
         prompt = ENTITY_EXTRACT_PROMPT.format(conversation=text)
         result = llm.invoke([HumanMessage(content=prompt)])
         raw = getattr(result, "content", "") or ""
-        # JSON blok cikar
+        # Extract JSON block
         import re
         match = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
         if match:
             import json
             return json.loads(match.group())
     except Exception as exc:
-        logger.debug(f"Entity extraction hatasi: {exc}")
+        logger.debug(f"Entity extraction error: {exc}")
     return {}
 
 
@@ -581,13 +581,13 @@ def update_memory_after_response(
     llm: Any = None,
 ) -> None:
     """
-    Yeni mesajlari short-term buffer'a yazar.
-    Short-term buffer doluysa otomatik özet oluşturur.
-    Entity memory: LLM ile konusmadan kullanici bilgileri cikarilip Redis'e yazilir.
+    Writes new messages to the short-term buffer.
+    Automatically generates a summary if the short-term buffer is full.
+    Entity memory: extracts user information from the conversation via LLM and writes to Redis.
     """
     memory.short_term.save(session_id, messages)
 
-    # Otomatik özet tetikleme
+    # Automatic summary trigger
     generate_summary_if_needed(
         memory,
         session_id=session_id,
@@ -595,7 +595,7 @@ def update_memory_after_response(
         llm=llm,
     )
 
-    # Entity memory guncelleme (PDF: her konusmada)
+    # Entity memory update (every conversation)
     effective_entity_id = entity_id or session_id
     if effective_entity_id and llm is not None:
         try:
@@ -604,6 +604,6 @@ def update_memory_after_response(
                 existing = memory.entity.load(effective_entity_id)
                 merged = {**existing, **new_facts}
                 memory.entity.save(effective_entity_id, merged)
-                logger.debug(f"Entity guncellendi: {effective_entity_id}, keys={list(new_facts.keys())}")
+                logger.debug(f"Entity updated: {effective_entity_id}, keys={list(new_facts.keys())}")
         except Exception as exc:
-            logger.warning(f"Entity memory guncelleme hatasi: {exc}")
+            logger.warning(f"Entity memory update error: {exc}")

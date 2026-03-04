@@ -3,20 +3,20 @@ from __future__ import annotations
 """
 Request context utilities.
 
-Bu modül, HTTP katmanından (FastAPI) gelen:
+This module collects information coming from the HTTP layer (FastAPI):
 - department_id
 - user_id
 - role
 - session_id
 - request_id / correlation_id
 
-gibi bilgileri tek bir yerde toplar ve agent / tool / memory katmanlarının
-erişebilmesi için contextvars üzerinden thread-local benzeri bir yapı sağlar.
+in a single place and provides a thread-local-like structure via contextvars
+so that agent / tool / memory layers can access it.
 
-Amaç:
-- API katmanında bir kez JWT parse etmek
-- Aşağı katmanlarda (RAG, tools, memory, audit) global state kullanmadan
-  güvenli ve test edilebilir bir şekilde request bağlamına erişebilmek.
+Purpose:
+- Parse JWT once at the API layer
+- Access request context safely and testably in lower layers (RAG, tools, memory, audit)
+  without using global state.
 """
 
 import contextvars
@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 
 @dataclass
 class RequestContext:
-    """Tek bir HTTP isteğinin kimlik ve yetki bilgileri."""
+    """Identity and authorization information for a single HTTP request."""
 
     request_id: str
     session_id: str
@@ -45,20 +45,20 @@ _REQUEST_CONTEXT_VAR: contextvars.ContextVar[Optional[RequestContext]] = (
 
 
 def set_request_context(ctx: RequestContext) -> None:
-    """Geçerli request context'ini ayarlar."""
+    """Sets the current request context."""
     _REQUEST_CONTEXT_VAR.set(ctx)
 
 
 def get_request_context() -> Optional[RequestContext]:
-    """Geçerli request context'ini döner (yoksa None)."""
+    """Returns the current request context (or None if not set)."""
     return _REQUEST_CONTEXT_VAR.get()
 
 
 def get_default_department_id() -> str:
     """
-    Varsayılan department_id değeri.
+    Default department_id value.
 
-    JWT olmayan senaryolarda veya background job'larda kullanılır.
+    Used in non-JWT scenarios or background jobs.
     """
     return os.getenv("DEFAULT_DEPARTMENT_ID", "default").strip() or "default"
 
@@ -70,11 +70,11 @@ def generate_request_ids(
     session_id_header: Optional[str] = None,
 ) -> tuple[str, str]:
     """
-    Request + session ID üretimi için yardımcı.
+    Helper for request + session ID generation.
 
-    - request_id: Tamamen rastgele UUID (izleme için).
-    - session_id: Eğer header'da verilmişse onu kullanır; yoksa
-      department_id + user_id + rastgele UUID kombinasyonundan üretir.
+    - request_id: Fully random UUID (for tracing).
+    - session_id: Uses the header value if provided; otherwise generates from
+      department_id + user_id + random UUID combination.
     """
     request_id = str(uuid.uuid4())
 
@@ -87,4 +87,3 @@ def generate_request_ids(
     session_id = f"{dept}:{user}:{random_part}"
 
     return request_id, session_id
-

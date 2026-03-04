@@ -1,11 +1,11 @@
 """
-LLM Backend Modülü — vLLM uzerinden Qwen (veya baska modeller)
+LLM Backend Module — Qwen (or other models) via vLLM
 
-Agent (tool-calling) için server mode ZORUNLUDUR:
-- vLLM ayrı bir process olarak serve edilmeli (scripts/serve_vllm.sh veya docker-compose)
-- ChatOpenAI ile OpenAI-compatible API endpoint'e bağlanır (bind_tools destekler)
+Server mode is REQUIRED for agent (tool-calling):
+- vLLM must be served as a separate process (scripts/serve_vllm.sh or docker-compose)
+- Connects to the OpenAI-compatible API endpoint via ChatOpenAI (supports bind_tools)
 
-Embedded mode (VLLM wrapper) desteklenmez — BaseLLM bind_tools sağlamaz.
+Embedded mode (VLLM wrapper) is not supported — BaseLLM does not provide bind_tools.
 """
 
 from langchain_openai import ChatOpenAI
@@ -15,24 +15,24 @@ from src.config import load_model_config
 
 def create_llm():
     """
-    Ortak model config'ini kullanarak ChatOpenAI instance'i olusturur.
+    Creates a ChatOpenAI instance using the shared model config.
 
-    - Model adi VLLM_MODEL env degiskeninden gelir (varsayilan: Qwen/Qwen3-8B-AWQ).
-    - vLLM server URL'si VLLM_SERVER_URL ile verilir (ornegin: http://localhost:6365/v1).
+    - Model name comes from the VLLM_MODEL env variable (default: Qwen/Qwen3-8B-AWQ).
+    - vLLM server URL is provided via VLLM_SERVER_URL (e.g.: http://localhost:6365/v1).
 
     Returns:
-        ChatOpenAI: bind_tools destekleyen chat model instance
+        ChatOpenAI: Chat model instance that supports bind_tools
 
     Raises:
-        ValueError: VLLM_SERVER_URL tanımlı değilse
+        ValueError: If VLLM_SERVER_URL is not defined
     """
     cfg = load_model_config()
 
     if not cfg.server_url:
         raise ValueError(
-            "Agent (tool-calling) icin vLLM server mode zorunludur.\n"
-            "1. ./scripts/serve_vllm.sh veya docker-compose ile vLLM server'i baslatin\n"
-            "2. .env dosyasina VLLM_SERVER_URL=http://localhost:6365/v1 ekleyin"
+            "vLLM server mode is required for agent (tool-calling).\n"
+            "1. Start the vLLM server with ./scripts/serve_vllm.sh or docker-compose\n"
+            "2. Add VLLM_SERVER_URL=http://localhost:6365/v1 to your .env file"
         )
 
     llm = ChatOpenAI(
@@ -50,4 +50,3 @@ def create_llm():
     )
 
     return llm
-

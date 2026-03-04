@@ -1,8 +1,8 @@
 """
-Doküman Yükleme Modülü (Loader Module)
+Document Loading Module (Loader Module)
 
-Bu modül, PDF ve TXT dosyalarını okuyarak LangChain Document objelerine çevirir.
-Ana işlevi, verileri diskten okuyup işleme (splitting/embedding) hazır hale getirmektir.
+This module reads PDF and TXT files and converts them to LangChain Document objects.
+Its main function is to read data from disk and prepare it for processing (splitting/embedding).
 """
 
 import logging
@@ -12,7 +12,7 @@ from typing import List
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
-# PDF okuyucunun gereksiz uyarılarını gizle
+# Suppress unnecessary warnings from PDF reader
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 logger = logging.getLogger("rag.loader")
@@ -22,22 +22,22 @@ SUPPORTED_EXTENSIONS = {".pdf", ".txt"}
 
 def load_single_document(file_path: str) -> List[Document]:
     """
-    Tek bir dosyayı yükler (PDF veya TXT).
+    Loads a single file (PDF or TXT).
 
     Args:
-        file_path: Yüklenecek dosyanın tam yolu.
+        file_path: Full path of the file to load.
 
     Returns:
-        Yüklenen Document objeleri listesi.
+        List of loaded Document objects.
     """
     if not os.path.exists(file_path):
-        logger.warning("Dosya bulunamadı: %s", file_path)
+        logger.warning("File not found: %s", file_path)
         return []
 
     ext = os.path.splitext(file_path)[1].lower()
 
     if ext not in SUPPORTED_EXTENSIONS:
-        logger.warning("Desteklenmeyen format: %s (%s)", ext, file_path)
+        logger.warning("Unsupported format: %s (%s)", ext, file_path)
         return []
 
     try:
@@ -47,25 +47,25 @@ def load_single_document(file_path: str) -> List[Document]:
             loader = TextLoader(file_path, encoding="utf-8")
 
         docs = loader.load()
-        logger.info("Yüklendi: %s (%d sayfa/parça)", os.path.basename(file_path), len(docs))
+        logger.info("Loaded: %s (%d pages/chunks)", os.path.basename(file_path), len(docs))
         return docs
     except Exception as e:
-        logger.error("Yükleme hatası %s: %s", file_path, e)
+        logger.error("Loading error %s: %s", file_path, e)
         return []
 
 
 def load_documents(data_dir: str = "data") -> List[Document]:
     """
-    Belirtilen klasördeki TÜM desteklenen dosyaları yükler.
+    Loads ALL supported files from the specified directory.
 
     Args:
-        data_dir: Dosyaların bulunduğu klasör yolu (varsayılan: 'data').
+        data_dir: Path to the directory containing files (default: 'data').
 
     Returns:
-        Tüm yüklenen Document objeleri listesi.
+        List of all loaded Document objects.
     """
     if not os.path.exists(data_dir):
-        logger.warning("Veri klasörü bulunamadı: %s — oluşturuluyor", data_dir)
+        logger.warning("Data directory not found: %s — creating it", data_dir)
         os.makedirs(data_dir, exist_ok=True)
         return []
 
@@ -84,5 +84,5 @@ def load_documents(data_dir: str = "data") -> List[Document]:
             if docs:
                 loaded_count += 1
 
-    logger.info("Toplam %d dosyadan %d doküman yüklendi", loaded_count, len(documents))
+    logger.info("Loaded %d documents from %d files total", len(documents), loaded_count)
     return documents

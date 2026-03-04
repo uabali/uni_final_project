@@ -3,14 +3,14 @@ from __future__ import annotations
 """
 LLM Provider abstraction — Multi-Provider Router.
 
-Bu katman, architecture.pdf'teki LLM Provider / Router layer'i temsil eder.
-Desteklenen backend'ler:
+This layer represents the LLM Provider / Router layer from architecture.pdf.
+Supported backends:
   1. VllmProvider    — local vLLM server (Qwen3-8B-AWQ)
-  2. OpenAIProvider  — OpenAI doğrudan API
-  3. LiteLLMProvider — LiteLLM proxy (100+ provider desteği)
+  2. OpenAIProvider  — OpenAI direct API
+  3. LiteLLMProvider — LiteLLM proxy (100+ provider support)
 
-Fallback zinciri: External API başarısız olursa otomatik olarak local vLLM'e düşer.
-Runtime'da provider değiştirme: create_provider_by_name() ile yeniden başlatma gerektirmez.
+Fallback chain: Automatically falls back to local vLLM if external API fails.
+Runtime provider switching: create_provider_by_name() — no restart required.
 """
 
 import logging
@@ -29,7 +29,7 @@ logger = logging.getLogger("rag.llm_provider")
 # ── Protocol ──────────────────────────────────────────────────
 
 class LLMProvider(Protocol):
-    """Minimal LLM arayuzu; LangChain ChatModel semantigine yakin tutulur."""
+    """Minimal LLM interface; kept close to LangChain ChatModel semantics."""
 
     @property
     def model(self) -> str:  # pragma: no cover - interface
@@ -47,7 +47,7 @@ class LLMProvider(Protocol):
 
 @dataclass
 class VllmProvider:
-    """Mevcut vLLM tabanli ChatOpenAI client icin sarici."""
+    """Wrapper for the existing vLLM-based ChatOpenAI client."""
 
     _client: BaseChatModel
 
@@ -68,8 +68,8 @@ class VllmProvider:
 @dataclass
 class OpenAIDirectProvider:
     """
-    OpenAI API'sine doğrudan bağlanan provider.
-    ChatOpenAI kullandığı için bind_tools() desteği var.
+    Provider that connects directly to the OpenAI API.
+    Uses ChatOpenAI so bind_tools() support is available.
     """
 
     _client: BaseChatModel
@@ -92,12 +92,12 @@ def _create_openai_provider(
     model: str | None = None,
     base_url: str | None = None,
 ) -> OpenAIDirectProvider:
-    """OpenAI doğrudan provider oluşturur."""
+    """Creates an OpenAI direct provider."""
     from langchain_openai import ChatOpenAI
 
     key = api_key or os.getenv("OPENAI_API_KEY", "")
     if not key:
-        raise ValueError("OpenAI API key gerekli (OPENAI_API_KEY env veya api_key parametresi)")
+        raise ValueError("OpenAI API key required (OPENAI_API_KEY env or api_key parameter)")
 
     model_name = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
@@ -117,12 +117,12 @@ def _create_openai_provider(
 @dataclass
 class LiteLLMProvider:
     """
-    LiteLLM proxy üzerinden 100+ LLM provider'a bağlanır.
-    LiteLLM ChatOpenAI uyumlu bir endpoint sunar.
+    Connects to 100+ LLM providers via LiteLLM proxy.
+    LiteLLM provides a ChatOpenAI-compatible endpoint.
 
-    Kullanım:
-      - litellm proxy çalışıyorsa: base_url=http://localhost:4000/v1
-      - Doğrudan litellm library: litellm.completion() ile fallback
+    Usage:
+      - If litellm proxy is running: base_url=http://localhost:4000/v1
+      - Direct litellm library: fallback via litellm.completion()
     """
 
     _client: BaseChatModel
@@ -146,12 +146,12 @@ def _create_litellm_provider(
     base_url: str | None = None,
 ) -> LiteLLMProvider:
     """
-    LiteLLM provider oluşturur.
-    LiteLLM proxy veya doğrudan litellm library üzerinden çalışır.
+    Creates a LiteLLM provider.
+    Works via LiteLLM proxy or directly through the litellm library.
     """
     from langchain_openai import ChatOpenAI
 
-    # LiteLLM proxy endpoint'i (docker-compose'da tanımlı)
+    # LiteLLM proxy endpoint (defined in docker-compose)
     litellm_url = base_url or os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1")
     key = api_key or os.getenv("LITELLM_API_KEY", os.getenv("OPENAI_API_KEY", "sk-1234"))
     model_name = model or os.getenv("LITELLM_MODEL", "gpt-4o-mini")
@@ -172,10 +172,10 @@ def _create_litellm_provider(
 @dataclass
 class FallbackProvider:
     """
-    Fallback zinciri: primary başarısız olursa fallback provider'a düşer.
+    Fallback chain: falls back to fallback provider if primary fails.
 
-    Tipik kullanım:
-      primary  = OpenAI veya LiteLLM (external)
+    Typical usage:
+      primary  = OpenAI or LiteLLM (external)
       fallback = VllmProvider (local)
     """
 
@@ -191,7 +191,7 @@ class FallbackProvider:
 
     @property
     def client(self) -> BaseChatModel:
-        """Fallback provider, primary'nin client'ını döner (bind_tools uyumluluğu için)."""
+        """Fallback provider returns the primary's client (for bind_tools compatibility)."""
         if self._active == "fallback":
             return self.fallback.client
         return self.primary.client
@@ -203,8 +203,8 @@ class FallbackProvider:
             return result
         except Exception as exc:
             logger.warning(
-                f"Primary provider ({self.primary.model}) başarısız: {exc}. "
-                f"Fallback'e ({self.fallback.model}) geçiliyor..."
+                f"Primary provider ({self.primary.model}) failed: {exc}. "
+                f"Falling back to ({self.fallback.model})..."
             )
             self._active = "fallback"
             return self.fallback.invoke(messages, **kwargs)
@@ -213,7 +213,7 @@ class FallbackProvider:
 # ── Factory Functions ─────────────────────────────────────────
 
 def create_default_provider() -> VllmProvider:
-    """Bugunku varsayılan backend: local vLLM server."""
+    """Current default backend: local vLLM server."""
     llm = create_llm()
     return VllmProvider(_client=llm)
 
@@ -226,20 +226,20 @@ def create_provider_by_name(
     with_fallback: bool = True,
 ) -> LLMProvider:
     """
-    İsme göre provider oluşturur.
+    Creates a provider by name.
 
     Args:
-        name: Provider adı ("vllm", "openai", "litellm")
+        name: Provider name ("vllm", "openai", "litellm")
         api_key: External provider API key
-        model: Kullanılacak model adı
+        model: Model name to use
         base_url: Custom endpoint URL
-        with_fallback: True ise External → vLLM fallback zinciri oluşturur
+        with_fallback: If True, creates an External → vLLM fallback chain
 
     Returns:
         LLMProvider instance
 
     Raises:
-        ValueError: Bilinmeyen provider adı
+        ValueError: Unknown provider name
     """
     name_lower = name.lower().strip()
 
@@ -253,7 +253,7 @@ def create_provider_by_name(
                 fallback = create_default_provider()
                 return FallbackProvider(primary=primary, fallback=fallback)
             except Exception:
-                logger.warning("Local vLLM fallback oluşturulamadı, sadece OpenAI kullanılacak")
+                logger.warning("Could not create local vLLM fallback, using OpenAI only")
                 return primary
         return primary
 
@@ -264,18 +264,18 @@ def create_provider_by_name(
                 fallback = create_default_provider()
                 return FallbackProvider(primary=primary, fallback=fallback)
             except Exception:
-                logger.warning("Local vLLM fallback oluşturulamadı, sadece LiteLLM kullanılacak")
+                logger.warning("Could not create local vLLM fallback, using LiteLLM only")
                 return primary
         return primary
 
     raise ValueError(
-        f"Bilinmeyen provider: '{name}'. "
-        f"Desteklenen provider'lar: vllm, openai, litellm"
+        f"Unknown provider: '{name}'. "
+        f"Supported providers: vllm, openai, litellm"
     )
 
 
 def list_available_providers() -> list[dict[str, str]]:
-    """Kullanılabilir provider'ların listesini döner."""
+    """Returns a list of available providers."""
     providers = [
         {
             "name": "vllm",
@@ -289,7 +289,7 @@ def list_available_providers() -> list[dict[str, str]]:
         },
         {
             "name": "litellm",
-            "description": "LiteLLM proxy (100+ provider: Anthropic, Google, Mistral, vb.)",
+            "description": "LiteLLM proxy (100+ providers: Anthropic, Google, Mistral, etc.)",
             "requires_key": True,
         },
     ]

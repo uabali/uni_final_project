@@ -1,5 +1,5 @@
 """
-Qdrant Collection'ı Sıfırlama Scripti
+Qdrant Collection Reset Script
 """
 import os
 
@@ -10,18 +10,18 @@ collection_name = os.getenv("QDRANT_COLLECTION", "rag_collection").strip()
 
 client = QdrantClient(url=qdrant_url)
 
-# Mevcut collection'ları listele
+# List existing collections
 collections = client.get_collections()
-print(f"Mevcut collection'lar: {[c.name for c in collections.collections]}")
-print(f"Hedef: {collection_name} | URL: {qdrant_url}")
+print(f"Existing collections: {[c.name for c in collections.collections]}")
+print(f"Target: {collection_name} | URL: {qdrant_url}")
 
-# rag_collection varsa sil
+# Delete collection if it exists
 try:
     client.delete_collection(collection_name)
-    print(f"✅ '{collection_name}' collection'ı silindi.")
+    print(f"✅ Collection '{collection_name}' deleted.")
 except Exception as e:
-    print(f"⚠️ Collection silinirken hata: {e}")
+    print(f"⚠️ Error while deleting collection: {e}")
 
-# Tekrar kontrol et
+# Verify
 collections = client.get_collections()
-print(f"Kalan collection'lar: {[c.name for c in collections.collections]}")
+print(f"Remaining collections: {[c.name for c in collections.collections]}")

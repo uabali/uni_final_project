@@ -1,15 +1,15 @@
 """
 Agentic RAG — LangGraph ReAct agent.
 
-ReAct döngüsü:
-  1. REASON  — LLM sorguyu analiz eder, hangi tool'u çağıracağına karar verir.
-  2. ACT     — Seçilen tool çalıştırılır (search_documents, web_search, calculator).
-  3. OBSERVE — Tool çıktısı state'e yazılır; LLM sonucu değerlendirir.
-  4. REPEAT  — Yeterli bilgi yoksa agent döngüye geri döner (max iterasyon limiti ile).
+ReAct loop:
+  1. REASON  — LLM analyzes the query and decides which tool to call.
+  2. ACT     — The selected tool is executed (search_documents, web_search, calculator).
+  3. OBSERVE — Tool output is written to state; LLM evaluates the result.
+  4. REPEAT  — If there is not enough information, the agent loops back (with max iteration limit).
 
-Kullanılan yapı: LangGraph StateGraph + ToolNode.
-Model, tool'ları bind ederek hangi tool'u çağıracağını kendi seçer
-(Qwen3-8B-AWQ, ChatOpenAI üzerinden tool-calling desteği).
+Architecture: LangGraph StateGraph + ToolNode.
+The model binds tools and chooses which tool to call on its own
+(Qwen3-8B-AWQ, tool-calling support via ChatOpenAI).
 """
 
 from __future__ import annotations
@@ -41,53 +41,85 @@ _LOCAL_STATUS_RE = re.compile(r"\[LOCAL_SEARCH_STATUS\]:\s*(\w+)")
 
 MAX_ITERATIONS = 3
 
-# Chat / konuşma patternleri — tool çağrısı gerektirmeyen sorgular
+# Chat / conversation patterns — queries that do not require tool calls
 _CHAT_PATTERNS = {
+    "thanks", "thank you", "thx", "ty",
+    "ok", "okay", "got it", "understood", "alright",
+    "yes", "no", "nope", "yep", "sure",
+    "why", "how so", "what do you mean", "anything else", "continue",
+    "say that again", "repeat", "can you summarize", "summarize",
+    "good day", "goodbye", "see you", "bye",
     "emin misin", "emin misiniz", "tesekkurler", "tesekkur ederim", "sagol",
-    "tamam", "anladim", "peki", "oldu", "ok", "evet", "hayir",
+    "tamam", "anladim", "peki", "oldu", "evet", "hayir",
     "neden", "nasil yani", "ne demek", "baska", "devam et", "devam",
     "bir daha soyle", "tekrar et", "ozetler misin", "ozetle",
-    "iyi gunler", "gorusuruz", "hosca kal", "bye",
+    "iyi gunler", "gorusuruz", "hosca kal",
 }
 
 SYSTEM_PROMPT = """You are a RAG (Retrieval-Augmented Generation) assistant.
 
 TOOLS (priority order)
-- search_documents: Varsayılan ilk adım. Ders notları, PDF içerikleri, kavramlar, tanımlar, kişi/olay vb. tüm bilgi soruları için önce bunu kullan.
-- web_search: Sadece search_documents yeterli değilse (low/none) veya soru canlı veri gerektiriyorsa (hava durumu, döviz, haber, skor, vb.) kullan.
-- calculator: Matematiksel ifadeler ve hesaplamalar için.
-- Hiçbir tool: Selamlaşma, küçük konuşma veya takip soruları ("emin misin", "devam", "??" vb.) için doğrudan cevap ver.
-- MCP tool'ları: Kullanıcı mesajında [MCP] veya [MCP:... ] öneki varsa, dosya sistemi / Postgres / hafıza gibi MCP araçlarını kullanmaya özellikle istekli ol.
+- search_documents: Default first step. Use this first for all knowledge questions about lecture notes, PDF content, concepts, definitions, people/events, etc.
+- web_search: Use only when search_documents is insufficient (low/none) or the question requires live data (weather, exchange rates, news, scores, etc.).
+- calculator: For mathematical expressions and calculations.
+- MCP tools: For file system, Postgres, memory, etc. — use when the user uses [MCP] prefix or when file/database operations are needed.
 
 LOCAL DOC CHUNKS
-- search_documents çıktısındaki [CHUNK N] bölümlerini önce alaka açısından değerlendir.
-- Genel/soyut bir soruysa ve chunk'lar konu dışı görünüyorsa, genel bilgiden cevap ver ve chunk'ları alıntılama.
-- [DOCUMENT_FILTER] varsa, kullanıcının belirli bir dosyayı sorduğu anlamına gelir; mümkün olduğunca o dosyadan gelen chunk'lara odaklan.
+- First evaluate [CHUNK N] sections from search_documents output for relevance.
+- If the query is general/abstract and the chunks seem off-topic, answer from general knowledge and do not cite chunks.
+- If [DOCUMENT_FILTER] is present, it means the user is asking about a specific file; focus on chunks from that file as much as possible.
 
 ANSWER STYLE
-- Dil: Türkçe, doğru karakterlerle (ş, ç, ğ, ı, ö, ü).
-- Uzunluk: Tercihen 2–4 net cümle, gerekiyorsa kısa madde işaretleri.
-- Atıf: Sadece gerçekten kullandığın chunk'lardan yararlandıysan, cevabın EN SONUNDA tek satırda yaz. Örnek:
-  - Yerel dokümanlar: "Kaynaklar: [CHUNK 1] architecture.pdf p.3"
-  - Web: "Web Kaynakları: url1, url2"
-- Sadece sohbet, kod veya genel bilgi cevapları için asla kaynak yazma.
-- Eğer belirli bir doküman sorulmuşsa ama tool sonucu cevabı içermiyorsa, tam olarak şöyle yanıtla: "Bilgi bulunamadı."
+- Language: Answer in the same language as the user's query.
+- Length: Preferably 2–4 clear sentences; use short bullet points if necessary.
+- Citation: Only if you actually used chunks, write citations at the VERY END of your answer in a single line. Example:
+  - Local documents: "Sources: [CHUNK 1] architecture.pdf p.3"
+  - Web: "Web Sources: url1, url2"
+- Never write sources for pure chat, code, or general knowledge answers.
+- If a specific document was asked about but the tool result does not contain the answer, respond exactly with: "No relevant information found."
 
 FOLLOW-UPS
-- "emin misin", "neden", "biraz daha açıkla", "??" gibi takip sorularında önceki mesajları bağlam olarak kullan, "hangi konuda?" diye sorma.
-- Bu tip takipler için ekstra tool çağırman çoğu durumda gereksizdir; önce mevcut bağlamdan açıklamayı dene.
+- For follow-up questions like "are you sure", "why", "explain more", "??", use previous messages as context; do not ask "about which topic?".
+- For such follow-ups, calling extra tools is usually unnecessary; try to explain from the existing context first.
 
-Güvenilir olmayan veya konu dışı chunk'lara dayanarak cevap uydurma; gerekirse genel bilgiden kısa bir cevap ver veya "Bilgi bulunamadı." de."""
+Do not fabricate answers based on unreliable or off-topic chunks; if necessary, give a short answer from general knowledge or say "No relevant information found.\""""
+
+# LLM-based Intent Classification Prompt
+INTENT_CLASSIFIER_PROMPT = """Given the user's message, classify the intent and select the most appropriate tool to use.
+
+Available tools:
+- search_documents: For questions about documents, PDFs, concepts, definitions, people, events,
+- web_search technical topics: For real-time info, weather, news, exchange rates, sports scores, current events
+- calculator: For mathematical expressions and calculations
+- MCP tools (read_file, write_file, list_directory, query_postgres, memory_search, etc.): For file operations, database queries, memory access
+- NO_TOOL: For greetings, small talk, acknowledgments, follow-up questions
+
+User message: {message}
+
+Previous conversation context: {context}
+
+Respond with ONLY a JSON object (no other text):
+{{"intent": "knowledge|math|live_info|file_operation|db_query|memory|greeting|chat|no_tool", "tool": "tool_name or null", "reason": "brief explanation"}}
+
+Examples:
+- "Hello how are you" → {{"intent": "greeting", "tool": null, "reason": "greeting message"}}
+- "What does this PDF say" → {{"intent": "knowledge", "tool": "search_documents", "reason": "document question"}}
+- "What's the weather today" → {{"intent": "live_info", "tool": "web_search", "reason": "weather is live info"}}
+- "Calculate 5 + 3 * 2" → {{"intent": "math", "tool": "calculator", "reason": "mathematical expression"}}
+- "[MCP] List files in /data folder" → {{"intent": "file_operation", "tool": "list_directory", "reason": "directory listing request"}}
+- "Query users in the database" → {{"intent": "db_query", "tool": "query_postgres", "reason": "database query request"}}
+- "What did we discuss in old chats" → {{"intent": "memory", "tool": "memory_search", "reason": "memory search request"}}
+- "Continue" → {{"intent": "chat", "tool": null, "reason": "follow-up question"}}"""
 
 
 class AgentState(TypedDict):
-    """Agent'ın taşıdığı state. messages listesi tüm konuşma geçmişini tutar."""
+    """Agent state. The messages list holds the entire conversation history."""
 
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
 def _get_intent_from_messages(messages: Sequence[BaseMessage]) -> str:
-    """[INTENT]: ... system mesajindan intent'i ceker; yoksa knowledge kabul edilir."""
+    """Extracts intent from [INTENT]: ... system message; defaults to knowledge."""
     for m in messages:
         if isinstance(m, SystemMessage) and m.content.startswith("[INTENT]:"):
             _, _, rest = m.content.partition(":")
@@ -97,7 +129,7 @@ def _get_intent_from_messages(messages: Sequence[BaseMessage]) -> str:
 
 
 def _extract_text_tool_calls(content: str, tool_names: set) -> list[dict]:
-    """vLLM parser kaçırırsa text içinden tool_call çıkarır."""
+    """Extracts tool_call from text if vLLM parser misses it."""
     if not content:
         return []
 
@@ -129,7 +161,7 @@ def _extract_text_tool_calls(content: str, tool_names: set) -> list[dict]:
     if calls:
         return calls
 
-    # Format 2: web_search + JSON args (iki satır formatı)
+    # Format 2: web_search + JSON args (two-line format)
     lines = [line.strip() for line in content.strip().splitlines() if line.strip()]
     if lines and lines[0] in tool_names and len(lines) > 1:
         try:
@@ -150,18 +182,25 @@ def _extract_text_tool_calls(content: str, tool_names: set) -> list[dict]:
 
 
 _LIVE_PHRASES = [
-    "hava durumu", "sicaklik", "weather",
+    "weather", "temperature", "forecast",
+    "live score", "match result", "match score",
+    "dollar rate", "euro rate", "gold price", "bitcoin price", "ethereum price",
+    "stock index", "interest rate",
+    "breaking news", "earthquake",
+    "hava durumu", "sicaklik",
     "canli skor", "mac sonucu", "mac skoru",
     "dolar kuru", "euro kuru", "altin fiyat", "bitcoin fiyat", "ethereum fiyat",
     "borsa endeks", "bist endeks", "faiz orani",
-    "ramazan ne zaman", "imsak vakti", "iftar vakti", "iftar saati",
-    "namaz vakti", "hicri takvim", "bayram ne zaman",
     "son dakika", "deprem oldu",
 ]
 
 _LIVE_COMBO_TERMS = [
+    ("today", {"weather", "temperature", "score", "match", "rate", "dollar", "euro", "gold", "price"}),
+    ("tomorrow", {"weather", "temperature", "match", "forecast"}),
+    ("right now", {"rate", "dollar", "euro", "gold", "price", "score", "temperature"}),
+    ("current", {"rate", "dollar", "euro", "gold", "price", "news", "score", "weather"}),
     ("bugun", {"hava", "sicaklik", "skor", "mac", "kur", "dolar", "euro", "altin", "fiyat"}),
-    ("yarin", {"hava", "sicaklik", "mac", "iftar", "imsak"}),
+    ("yarin", {"hava", "sicaklik", "mac"}),
     ("su an", {"kur", "dolar", "euro", "altin", "fiyat", "skor", "sicaklik"}),
     ("simdi", {"kur", "dolar", "euro", "altin", "fiyat", "skor", "sicaklik"}),
     ("guncel", {"kur", "dolar", "euro", "altin", "fiyat", "haber", "skor", "hava"}),
@@ -179,7 +218,7 @@ def _is_live_info_query(query: str) -> bool:
 
 
 def _is_pure_math(query: str) -> str | None:
-    """Sorgu tamamen matematik ifadesiyse ifadeyi dondurur, degilse None."""
+    """Returns the expression if the query is purely mathematical, otherwise None."""
     if not query:
         return None
     stripped = query.strip()
@@ -192,7 +231,7 @@ def _is_pure_math(query: str) -> str | None:
 
 
 def _is_chat_query(query: str) -> bool:
-    """Konuşma/chat sorusu mu kontrol eder."""
+    """Checks whether this is a conversational/chat query."""
     q = query.strip().lower()
     return q in _CHAT_PATTERNS
 
@@ -202,7 +241,7 @@ def _build_forced_tool_call(query: str) -> dict | None:
     if not raw:
         return None
 
-    # Özel frontend modu: [WEB_ONLY] prefix'i varsa her durumda web_search çağır
+    # Special frontend mode: if [WEB_ONLY] prefix is present, always call web_search
     WEB_ONLY_PREFIX = "[WEB_ONLY]"
     web_only = False
     if raw.startswith(WEB_ONLY_PREFIX):
@@ -214,13 +253,13 @@ def _build_forced_tool_call(query: str) -> dict | None:
     if not q:
         return None
 
-    # Eger query uzunlugu cok kisaysa veya sadece noktalama isareti ise tool cagirma
+    # If query length is too short or only punctuation, don't call a tool
     if len(q) < 3 or all(c in "?!.,;- " for c in q):
         return None
 
     ql = q.lower()
 
-    # Selamlama veya chat patternleri → tool çağırma
+    # Greetings or chat patterns → do not call a tool
     if ql in {"merhaba", "selam", "hello", "hi"} or ql in _CHAT_PATTERNS:
         return None
 
@@ -254,7 +293,7 @@ def _get_latest_user_query(messages: list[BaseMessage]) -> str:
 
 
 def _build_fast_web_answer(tool_output: str) -> str | None:
-    """Tavily summary + URL'lerden LLM'siz hizli cevap uretir."""
+    """Produces a fast answer from Tavily summary + URLs without LLM."""
     if not tool_output:
         return None
 
@@ -270,7 +309,7 @@ def _build_fast_web_answer(tool_output: str) -> str | None:
     lines: list[str] = [summary]
 
     if urls:
-        lines.append("\nWeb Kaynaklari:")
+        lines.append("\nWeb Sources:")
         for url in urls:
             lines.append(f"- {url}")
 
@@ -282,15 +321,15 @@ def _build_fast_web_answer(tool_output: str) -> str | None:
 
 def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: list | None = None):
     """
-    Verilen LLM'i ve tool listesini kullanarak derlenmiş bir LangGraph
-    ReAct agent döndürür.
+    Builds and returns a compiled LangGraph ReAct agent using the given LLM
+    and tool list.
 
     Args:
-        llm: Tool-calling destekleyen LangChain LLM (bind_tools uyumlu).
-        tools: Kullanılacak tool listesi. None ise get_all_tools() (local + MCP).
+        llm: LangChain LLM with tool-calling support (bind_tools compatible).
+        tools: Tool list to use. If None, uses get_all_tools() (local + MCP).
 
     Returns:
-        CompiledGraph: .invoke() veya .stream() ile çalıştırılabilir graph.
+        CompiledGraph: Graph that can be run with .invoke() or .stream().
     """
     tool_list = tools if tools is not None else get_all_tools()
     _tool_names = {t.name for t in tool_list}
@@ -300,8 +339,8 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
     tracer = get_tracer()
 
     def entry_node(state: AgentState) -> dict:
-        # Su anda intent sonucu sadece metadata olarak tutuluyor; ileride
-        # Memory / RAG node'larina routing icin kullanilabilir.
+        # Currently intent result is only kept as metadata; later it can be
+        # used for routing to Memory / RAG nodes.
         messages = list(state["messages"])
         if not messages:
             return {"messages": []}
@@ -317,7 +356,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
                 intent = "math"
             elif _is_live_info_query(q):
                 intent = "live_info"
-            # Intent bilgisini SystemMessage icine encode ederek tasiyoruz.
+            # Encode intent info inside a SystemMessage for transport.
             intent_system = SystemMessage(content=f"[INTENT]: {intent}")
             result = {"messages": [intent_system, last]}
             tracer.trace_node_end("entry", {"intent": intent})
@@ -326,7 +365,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
 
     # ── RAG Node: local retrieval augmentation ───────────────
     def rag_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
-        # Memory sistemi varsa, hafiza baglamini system prompt olarak enjekte et.
+        # If memory system exists, inject memory context as system prompt.
         if memory is None:
             return {"messages": list(state["messages"])}
 
@@ -349,12 +388,12 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
         tracer.trace_node_end("memory", {"injected_messages": len(enriched)})
         return {"messages": list(enriched)}
 
-    # ── Chat Node: saf konusma / greeting ─────────────────────
+    # ── Chat Node: pure conversation / greeting ───────────────
     def chat_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
         """
-        Intent'i greeting/chat olan durumlarda RAG ve tool'lar ile ugrasmak yerine
-        dogrudan LLM'den kisa bir cevap aliriz.
-        PDF: Chat cevabi da memory'e yazilmalidir.
+        For greeting/chat intents, get a short answer directly from LLM
+        without going through RAG and tools.
+        Chat responses should also be written to memory.
         """
         messages = list(state["messages"])
 
@@ -375,7 +414,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
         )
         tracer.trace_node_end("chat", {})
 
-        # Memory'e yaz (PDF: Response Node benzeri)
+        # Write to memory
         if memory is not None:
             configurable = (config or {}).get("configurable", {}) or {}
             session_id = configurable.get("session_id") or os.getenv("MEMORY_SESSION_ID", "cli-session")
@@ -402,7 +441,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
         if not has_system_prompt:
             messages.insert(0, SystemMessage(content=SYSTEM_PROMPT))
 
-        # Ilk adimda deterministic tool secimi: RAG oncelikli ve daha stabil.
+        # First step: deterministic tool selection — RAG-first and more stable.
         has_tool_calls = any(getattr(m, "tool_calls", None) for m in messages)
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
         if (
@@ -431,7 +470,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
         last_message = messages[-1]
 
         # Deterministic fallback:
-        # search_documents sonucu yetersizse (none), LLM kararini beklemeden web_search'e gec.
+        # If search_documents result is insufficient (none), fall back to web_search without waiting for LLM decision.
         enable_local_web_fallback = os.getenv("AGENT_ENABLE_LOCAL_WEB_FALLBACK", "true").lower() == "true"
         if (
             enable_local_web_fallback
@@ -461,7 +500,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
                     }
 
         # Fast web finalization:
-        # web_search sonucu yeterliyse ikinci LLM turunu atlayip gecikmeyi dusur.
+        # If web_search result is sufficient, skip second LLM turn to reduce latency.
         fast_web_finalize = os.getenv("AGENT_FAST_WEB_FINALIZE", "true").lower() == "true"
         if fast_web_finalize and isinstance(last_message, ToolMessage) and getattr(last_message, "name", "") == "web_search":
             fast_answer = _build_fast_web_answer(last_message.content if isinstance(last_message.content, str) else "")
@@ -506,7 +545,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
                 return "response"
             return "tools"
 
-        # Tool cagrisi yoksa artik Response Node'a gec.
+        # No tool calls — proceed to Response Node.
         return "response"
 
     # ── Response Node: final synthesis (LLM or fast web) ────
@@ -524,17 +563,17 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
                 llm=llm,
             )
             tracer.trace_node_end("response", {"session_id": session_id, "message_count": len(messages)})
-        return {"messages": []}  # Yeni mesaj yok; side-effect (memory) zaten yapildi.
+        return {"messages": []}  # No new message; side-effect (memory) already done.
 
-    # ── Router: intent → hangi ana path? ────────────────────
+    # ── Router: intent → which main path? ────────────────────
     def route_after_entry(state: AgentState) -> str:
         """
-        entry node'un ekledigi [INTENT] system mesajina gore hangi node'a
-        gidecegimize karar verir.
+        Decides which node to go to based on the [INTENT] system message
+        added by the entry node.
 
         - greeting/chat  → chat
-        - math/live_info → react_agent (dogrudan tool + LLM, RAG/memory yok)
-        - knowledge      → rag (RAG + memory, sonra react_agent)
+        - math/live_info → react_agent (direct tool + LLM, no RAG/memory)
+        - knowledge      → rag (RAG + memory, then react_agent)
         """
         messages = list(state["messages"])
         intent = _get_intent_from_messages(messages)
@@ -558,7 +597,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
 
     graph.set_entry_point("entry")
 
-    # Intent temelli ilk branching
+    # Intent-based initial branching
     graph.add_conditional_edges(
         "entry",
         route_after_entry,
@@ -580,7 +619,7 @@ def build_research_agent_graph(llm, memory: MemorySystem | None = None, tools: l
 
 
 class SupervisorState(TypedDict):
-    """Supervisor grafi icin state; su an sadece mesaj listesini tasir."""
+    """State for the supervisor graph; currently only carries the message list."""
 
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
@@ -589,13 +628,13 @@ def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | Non
     """
     Supervisor agent: intent routing + sub-agent delegation.
 
-    - ResearchAgent: RAG + web_search + calculator (bilgi edinme)
-    - ExecutionAgent: MCP tabanlı eylemler (dosya sistemi, Postgres, hafıza, vb.)
+    - ResearchAgent: RAG + web_search + calculator (information retrieval)
+    - ExecutionAgent: MCP-based actions (file system, Postgres, memory, etc.)
     """
 
     research_graph = build_research_agent_graph(llm, memory=memory, tools=tools)
 
-    # ExecutionAgent için MCP odaklı tool listesi
+    # MCP-focused tool list for ExecutionAgent
     exec_tool_names = {
         "read_file",
         "list_directory",
@@ -616,13 +655,13 @@ def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | Non
         config: RunnableConfig | None = None,
     ) -> dict:
         """
-        Basit ExecutionAgent:
-        - Sadece MCP tabanlı tool'ları bağlar.
-        - Aynı ReAct benzeri döngüyü uygular (tool_calls → ToolNode → tekrar).
+        Simple ExecutionAgent:
+        - Only binds MCP-based tools.
+        - Applies the same ReAct-like loop (tool_calls → ToolNode → repeat).
         """
         messages = list(state["messages"])
 
-        # Kısa, eylem odaklı system prompt
+        # Short, action-oriented system prompt
         exec_system = SystemMessage(
             content=(
                 "You are an Execution Agent responsible for performing actions via MCP tools.\n"
@@ -656,9 +695,9 @@ def build_agent_graph(llm, memory: MemorySystem | None = None, tools: list | Non
 
     def route_to_agent(state: SupervisorState) -> str:
         """
-        Basit routing:
-        - Kullanıcı mesajı [MCP] veya [MCP:...] ile başlıyorsa → ExecutionAgent
-        - Aksi durumda → ResearchAgent
+        Simple routing:
+        - If user message starts with [MCP] or [MCP:...] → ExecutionAgent
+        - Otherwise → ResearchAgent
         """
         messages = list(state["messages"])
         for msg in reversed(messages):

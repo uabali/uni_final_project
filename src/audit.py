@@ -3,10 +3,10 @@ from __future__ import annotations
 """
 Append-only audit logging for agent operations, tool calls and data access.
 
-Bu modül, architecture dokümanındaki "Audit Log" kutusunu uygular:
-- Her önemli eylem (istek, tool çağrısı, RAG retrieval, hafıza yazımı, cevap)
-  Postgres'teki append-only bir tabloya JSON payload olarak kaydedilir.
-- Postgres yoksa gracefully no-op moda düşer (sistemi bloklamaz).
+This module implements the "Audit Log" box from the architecture document:
+- Every significant action (request, tool call, RAG retrieval, memory write, response)
+  is recorded as a JSON payload in an append-only Postgres table.
+- Gracefully falls back to no-op mode if Postgres is unavailable (does not block the system).
 """
 
 import json
@@ -48,11 +48,11 @@ CREATE INDEX IF NOT EXISTS idx_audit_department
 @dataclass
 class AuditLogger:
     """
-    Basit, append-only audit logger.
+    Simple, append-only audit logger.
 
-    - Postgres bağlantısı kurulamazsa `_available = False` olur ve tüm log_* çağrıları no-op'tur.
-    - Uygulama kapanışında close() çağrılabilir; ancak bağlantı sızmasını engellemek için
-      connection autocommit modunda ve hafif kullanılır.
+    - If Postgres connection cannot be established, `_available = False` and all log_* calls are no-op.
+    - close() can be called on application shutdown; however, the connection uses autocommit mode
+      and is used lightly to prevent connection leaks.
     """
 
     postgres_url: Optional[str] = None
@@ -67,7 +67,7 @@ class AuditLogger:
             "POSTGRES_URL", "postgresql://rag:rag@localhost:5432/rag"
         )
         if not url:
-            logger.info("Postgres URL tanımlı değil — AuditLogger no-op modda")
+            logger.info("Postgres URL not defined — AuditLogger in no-op mode")
             return
 
         try:
@@ -78,14 +78,14 @@ class AuditLogger:
             with self._conn.cursor() as cur:
                 cur.execute(_AUDIT_TABLE_DDL)
             self._available = True
-            logger.info("AuditLogger Postgres bağlantısı hazır")
+            logger.info("AuditLogger Postgres connection ready")
         except ImportError:
             logger.warning(
-                "psycopg2 kurulu değil. AuditLogger no-op modda çalışacak. "
-                "Kurulum: pip install psycopg2-binary"
+                "psycopg2 is not installed. AuditLogger will run in no-op mode. "
+                "Install: pip install psycopg2-binary"
             )
         except Exception as exc:
-            logger.warning(f"AuditLogger Postgres bağlantısı kurulamadı: {exc}. Audit no-op modda.")
+            logger.warning(f"AuditLogger Postgres connection failed: {exc}. Audit in no-op mode.")
 
     @property
     def is_available(self) -> bool:
@@ -109,7 +109,7 @@ class AuditLogger:
         context: Optional[RequestContext],
         payload: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Genel amaçlı event log fonksiyonu."""
+        """General-purpose event log function."""
         if not self._available or not self._conn:
             return
 
@@ -133,8 +133,8 @@ class AuditLogger:
                     ),
                 )
         except Exception as exc:
-            # Audit sistemi asla ana akışı bozmaz; sadece log yazar.
-            logger.error(f"Audit log hatası ({event_type}): {exc}")
+            # Audit system never disrupts the main flow; only logs the error.
+            logger.error(f"Audit log error ({event_type}): {exc}")
 
     # ---- Convenience wrappers ---------------------------------------------
 
@@ -237,13 +237,12 @@ _AUDIT_LOGGER: Optional[AuditLogger] = None
 
 def get_audit_logger() -> AuditLogger:
     """
-    Lazy-init edilmiş global AuditLogger instance'ı döner.
+    Returns the lazy-initialized global AuditLogger instance.
 
-    Postgres yoksa veya bağlantı kurulamazsa, dönen logger'ın `is_available`
-    alanı False olur ve tüm log çağrıları no-op çalışır.
+    If Postgres is unavailable or connection fails, the returned logger's
+    `is_available` field will be False and all log calls will be no-op.
     """
     global _AUDIT_LOGGER
     if _AUDIT_LOGGER is None:
         _AUDIT_LOGGER = AuditLogger()
     return _AUDIT_LOGGER
-

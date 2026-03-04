@@ -3,16 +3,16 @@ from __future__ import annotations
 """
 Tool invocation abstraction — MCP + Local Hybrid.
 
-Bu katman, architecture.pdf'teki MCP/Tool Execution layer'i temsil eder:
+This layer represents the MCP/Tool Execution layer from architecture.pdf:
 
-1. LocalToolInvoker  — Mevcut LangChain tool'ları (search_documents, web_search, calculator)
-2. McpToolInvoker    — FastMCP server'a HTTP üzerinden tool çağrısı
-3. HybridToolInvoker — Local + MCP birleşimi; tool'un kaydına göre uygun invoker'ı seçer
+1. LocalToolInvoker  — Existing LangChain tools (search_documents, web_search, calculator)
+2. McpToolInvoker    — Tool invocation over HTTP to FastMCP server
+3. HybridToolInvoker — Combines Local + MCP; selects appropriate invoker based on tool registry
 
-Güvenlik:
-  - MCP çağrılarında timeout kontrolü
-  - İzin verilen tool listesi (whitelist)
-  - Hata izolasyonu (bir tool'un hatası diğerlerini etkilemez)
+Security:
+  - Timeout control on MCP calls
+  - Allowed tool list (whitelist)
+  - Error isolation (one tool's error does not affect others)
 """
 
 import logging
@@ -33,7 +33,7 @@ logger = logging.getLogger("rag.tooling")
 # ── Protocol ──────────────────────────────────────────────────
 
 class ToolInvoker(Protocol):
-    """Tool çağırımı için soyut arayüz."""
+    """Abstract interface for tool invocation."""
 
     def invoke(self, name: str, args: Dict[str, Any]) -> Any:  # pragma: no cover - interface
         ...
@@ -47,8 +47,8 @@ class ToolInvoker(Protocol):
 @dataclass
 class LocalToolInvoker:
     """
-    Var olan LangChain tool fonksiyonlarını (search_documents, web_search, calculator)
-    dogrudan process içinde çalıştıran invoker.
+    Invoker that runs existing LangChain tool functions (search_documents, web_search, calculator)
+    directly in-process.
     """
 
     tools: Dict[str, BaseTool]
@@ -72,14 +72,14 @@ class LocalToolInvoker:
 @dataclass
 class McpToolInvoker:
     """
-    FastMCP server'a HTTP üzerinden tool çağrısı yapan invoker.
+    Invoker that makes tool calls to a FastMCP server over HTTP.
 
-    MCP (Model Context Protocol) standardına uygun olarak:
-    - SSE transport ile tool discovery ve invocation
-    - Timeout kontrolü
-    - Whitelist bazlı yetkilendirme
+    Following the MCP (Model Context Protocol) standard:
+    - Tool discovery and invocation via SSE transport
+    - Timeout control
+    - Whitelist-based authorization
 
-    Kullanım:
+    Usage:
         invoker = McpToolInvoker(
             server_url="http://localhost:8001",
             allowed_tools={"weather", "stock_price"},
@@ -97,7 +97,7 @@ class McpToolInvoker:
     _discovered_tools: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     def discover_tools(self) -> Dict[str, Any]:
-        """MCP server'dan kullanılabilir tool'ları keşfeder."""
+        """Discovers available tools from the MCP server."""
         import urllib.request
         import json
 
@@ -117,29 +117,29 @@ class McpToolInvoker:
                 tools[name] = tool_info
 
             self._discovered_tools = tools
-            logger.info(f"MCP tool'ları keşfedildi: {list(tools.keys())}")
+            logger.info(f"MCP tools discovered: {list(tools.keys())}")
             return tools
 
         except Exception as exc:
-            logger.warning(f"MCP tool discovery başarısız: {exc}")
+            logger.warning(f"MCP tool discovery failed: {exc}")
             return {}
 
     def invoke(self, name: str, args: Dict[str, Any]) -> Any:
-        """MCP server üzerinden tool çağrısı yapar."""
+        """Invokes a tool via the MCP server."""
         import urllib.request
         import json
 
-        # Yetkilendirme kontrolü (statik whitelist)
+        # Static whitelist authorization check
         if self.allowed_tools and name not in self.allowed_tools:
-            raise PermissionError(f"Tool '{name}' MCP whitelist'te değil")
+            raise PermissionError(f"Tool '{name}' is not in the MCP whitelist")
 
-        # Department × MCP matrix kontrolü (PolicyEngine)
+        # Department × MCP matrix check (PolicyEngine)
         ctx = get_request_context()
         policy = get_policy_engine()
         if ctx is not None:
             if not policy.can_call_tool(ctx.department_id, ctx.role, name):
                 raise PermissionError(
-                    f"Tool '{name}' için departman ({ctx.department_id}) yetkisi yok"
+                    f"Department ({ctx.department_id}) is not authorized for tool '{name}'"
                 )
 
         audit = get_audit_logger()
@@ -165,7 +165,7 @@ class McpToolInvoker:
             return result.get("result", result)
 
         except PermissionError:
-            # Policy / whitelist hataları çağırana fırlatılır, ayrıca audit log'lanır.
+            # Policy / whitelist errors are raised to the caller and also audit-logged.
             if audit.is_available:
                 audit.log_tool_call(
                     context=ctx,
@@ -186,7 +186,7 @@ class McpToolInvoker:
                 )
             raise TimeoutError(f"MCP tool '{name}' timeout ({self.timeout_seconds}s)")
         except Exception as exc:
-            logger.error(f"MCP tool invocation hatası ({name}): {exc}")
+            logger.error(f"MCP tool invocation error ({name}): {exc}")
             if audit.is_available:
                 audit.log_tool_call(
                     context=ctx,
@@ -195,7 +195,7 @@ class McpToolInvoker:
                     error=str(exc),
                     extra={"mcp_server_url": self.server_url},
                 )
-            raise RuntimeError(f"MCP tool '{name}' çağrısı başarısız: {exc}") from exc
+            raise RuntimeError(f"MCP tool '{name}' invocation failed: {exc}") from exc
 
     def list_tools(self) -> List[str]:
         if not self._discovered_tools:
@@ -208,15 +208,15 @@ class McpToolInvoker:
 @dataclass
 class HybridToolInvoker:
     """
-    Local + MCP birleşimi.
+    Combines Local + MCP.
 
-    - Bazı tool'lar local çalışır (hesaplama, RAG search)
-    - Bazıları MCP üzerinden dış servislere yönlendirilir (hava durumu, API çağrıları)
-    - Bir tool bulunamazsa sırasıyla local → MCP aranır
+    - Some tools run locally (calculation, RAG search)
+    - Some are routed to external services via MCP (weather, API calls)
+    - If a tool is not found, it searches local → MCP in order
 
-    Konfigürasyon:
-        mcp_only_tools: Set[str] — Sadece MCP üzerinden çalışacak tool'lar
-        local_only_tools: Set[str] — Sadece local çalışacak tool'lar
+    Configuration:
+        mcp_only_tools: Set[str] — Tools that only run via MCP
+        local_only_tools: Set[str] — Tools that only run locally
     """
 
     local: LocalToolInvoker
@@ -226,7 +226,7 @@ class HybridToolInvoker:
 
     @classmethod
     def from_env(cls) -> "HybridToolInvoker":
-        """Environment değişkenlerinden hybrid invoker oluşturur."""
+        """Creates a hybrid invoker from environment variables."""
         local = LocalToolInvoker.from_default()
 
         mcp: Optional[McpToolInvoker] = None
@@ -242,7 +242,7 @@ class HybridToolInvoker:
             try:
                 mcp.discover_tools()
             except Exception as exc:
-                logger.warning(f"MCP bağlantısı kurulamadı: {exc}")
+                logger.warning(f"MCP connection could not be established: {exc}")
 
         mcp_only = set(
             filter(None, os.getenv("MCP_ONLY_TOOLS", "").split(","))
@@ -252,24 +252,24 @@ class HybridToolInvoker:
 
     def invoke(self, name: str, args: Dict[str, Any]) -> Any:
         """
-        Tool'u uygun invoker üzerinden çağırır.
+        Invokes the tool via the appropriate invoker.
 
-        Karar sırası:
-          1. mcp_only_tools'da ise → MCP
-          2. local_only_tools'da ise → Local
-          3. İkisinde de yoksa → Local dene, yoksa MCP dene
+        Decision order:
+          1. If in mcp_only_tools → MCP
+          2. If in local_only_tools → Local
+          3. If in neither → Try Local first, then MCP
         """
-        # MCP-only tool'lar
+        # MCP-only tools
         if name in self.mcp_only_tools:
             if self.mcp is None:
-                raise RuntimeError(f"Tool '{name}' MCP gerektiriyor ama MCP bağlantısı yok")
+                raise RuntimeError(f"Tool '{name}' requires MCP but no MCP connection exists")
             return self.mcp.invoke(name, args)
 
-        # Local-only tool'lar
+        # Local-only tools
         if name in self.local_only_tools:
             return self.local.invoke(name, args)
 
-        # Hibrit: önce local, sonra MCP
+        # Hybrid: try local first, then MCP
         if name in self.local.tools:
             return self.local.invoke(name, args)
 
@@ -277,13 +277,13 @@ class HybridToolInvoker:
             try:
                 return self.mcp.invoke(name, args)
             except Exception as exc:
-                logger.warning(f"MCP fallback da başarısız ({name}): {exc}")
+                logger.warning(f"MCP fallback also failed ({name}): {exc}")
                 raise
 
-        raise ValueError(f"Unknown tool: {name} (ne local ne MCP'de bulunamadı)")
+        raise ValueError(f"Unknown tool: {name} (not found in local or MCP)")
 
     def list_tools(self) -> List[str]:
-        """Tüm kullanılabilir tool'ların birleşik listesi."""
+        """Combined list of all available tools."""
         tools = set(self.local.list_tools())
         if self.mcp is not None:
             tools.update(self.mcp.list_tools())

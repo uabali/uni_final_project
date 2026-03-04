@@ -1,54 +1,110 @@
-## Enterprise Agentic RAG & AI Ops Center
+<div align="center">
 
-**FastAPI + LangGraph + vLLM + Qdrant + Redis + Postgres + Next.js + MCP**
+# 🤖 Enterprise Agentic RAG & AI Ops Center
 
-Bu repo, tek bir `docker compose up` ile çalışan, GPU destekli, agentik RAG tabanlı bir **AI Operations Center** prototipidir:
+**FastAPI · LangGraph · vLLM · Qdrant · Redis · Postgres · Next.js · MCP**
 
-- **FastAPI Orchestrator**: LangGraph tabanlı multi‑agent RAG pipeline, SSE streaming, ingestion, LLM provider switch, metrics.
-- **vLLM**: OpenAI‑compatible local LLM server (Qwen3 / Qwen2.5 ailesi).
-- **Qdrant**: Multi‑tenant vector DB (isteğe bağlı strict namespace moduyla).
-- **Redis + Postgres**: Multi‑tier memory (short‑term, episodic, summaries) + audit log + metrics.
-- **Next.js frontend**: Modern chat UI (RAG/web/MCP modları, dosya upload, departman & model seçici, agent durumu, monitoring).
-- **MCP Tooling**: Dosya sistemi, Postgres, hafıza vb. tool’lar için MCP entegrasyonu (opsiyonel).
+A GPU-accelerated, multi-agent RAG system that runs with a single `docker compose up`.
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg)](https://fastapi.tiangolo.com)
+[![LangGraph](https://img.shields.io/badge/LangGraph-ReAct-purple.svg)](https://langchain-ai.github.io/langgraph/)
+[![vLLM](https://img.shields.io/badge/vLLM-Qwen3--8B--AWQ-orange.svg)](https://github.com/vllm-project/vllm)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+</div>
 
 ---
 
-## 1. Hızlı Başlangıç (Docker Compose)
+## Overview
 
-### 1.1. Gereksinimler
+This repository is a production-ready **AI Operations Center** prototype featuring:
 
-- **OS**: Linux / WSL2 (GPU passthrough için tavsiye edilen)
-- **Docker & Docker Compose**
-- **NVIDIA GPU** (CUDA destekli, en az 12 GB VRAM önerilir)
-- **Python 3.11+** (lokal geliştirme ve scriptler için)
+- **FastAPI Orchestrator** — LangGraph-based multi-agent RAG pipeline with SSE streaming, incremental document ingestion, runtime LLM provider switching, and metrics.
+- **vLLM** — OpenAI-compatible local LLM server (Qwen3 / Qwen2.5 family, AWQ quantized).
+- **Qdrant** — Multi-tenant vector database with optional strict namespace isolation.
+- **Redis + Postgres** — Multi-tier memory (short-term buffer, episodic, entity, conversation summaries) + append-only audit log + departmental metrics.
+- **Next.js Frontend** — Modern chat UI with RAG/Web/MCP modes, file upload, department & model selector, agent status panel, and monitoring dashboard.
+- **MCP Tooling** — Optional Model Context Protocol integration for filesystem, database, and memory tools.
 
-### 1.2. Servisleri Ayağa Kaldır
+## Architecture
 
-Tüm backend bileşenlerini (orchestrator, vLLM, Qdrant, Redis, Postgres, opsiyonel Litellm/SearXNG) aynı anda ayağa kaldırmak için:
+<div align="center">
+
+![Architecture](docs/architecture.png)
+
+</div>
+
+### Agent Pipeline
+
+```
+User Query
+  │
+  ▼
+┌─────────────────────────┐
+│   Supervisor Agent      │ ← Routes based on message prefix
+│   (LangGraph ReAct)     │
+└────────┬────────┬───────┘
+         │        │
+    ┌────▼──┐  ┌──▼────────┐
+    │Research│  │Execution  │ ← [MCP] prefix → Execution
+    │ Agent  │  │  Agent    │ ← Otherwise → Research
+    └────┬───┘  └──┬────────┘
+         │         │
+  ┌──────▼──────┐  ├─ read_file
+  ├─ search_docs│  ├─ execute_python
+  ├─ web_search │  ├─ query_postgres
+  └─ calculator │  └─ run_bash
+                │
+        ┌───────▼────────┐
+        │ Hybrid Retrieval│
+        │ Vector + BM25   │
+        │ + Cross-Encoder │
+        │   Reranking     │
+        └─────────────────┘
+```
+
+---
+
+## 1. Quick Start (Docker Compose)
+
+### 1.1 Prerequisites
+
+| Requirement | Details |
+|---|---|
+| **OS** | Linux / WSL2 (recommended for GPU passthrough) |
+| **Docker** | Docker Engine + Docker Compose v2 |
+| **GPU** | NVIDIA GPU with CUDA support (≥ 12 GB VRAM recommended) |
+| **Python** | 3.11+ (for local development and scripts) |
+
+### 1.2 Launch All Services
 
 ```bash
+# Clone and enter the project
 cd vLLM_rag
 
-# Çekirdek stack (orchestrator + vLLM + Qdrant + Redis + Postgres)
+# Core stack (Orchestrator + vLLM + Qdrant + Redis + Postgres)
 docker compose up -d
 
-# Tüm opsiyonel bileşenler ile (Litellm proxy, SearXNG vb.)
+# Full stack with optional services (LiteLLM proxy, SearXNG, etc.)
 docker compose --profile full up -d
 ```
 
-Varsayılan portlar:
+### Default Ports
 
-- `:8000` → FastAPI orchestrator (`/chat`, `/ingest`, `/config/llm`, `/metrics/summary`…)
-- `:8080` → vLLM OpenAI‑compatible endpoint
-- `:6333` → Qdrant
-- `:6379` → Redis
-- `:5432` → Postgres
-- `:4000` → LiteLLM proxy (opsiyonel, `full` profilde)
-- `:8888` → SearXNG (opsiyonel)
+| Port | Service | Description |
+|------|---------|-------------|
+| `:8000` | FastAPI Orchestrator | `/chat`, `/ingest`, `/config/llm`, `/metrics/summary` |
+| `:8080` | vLLM | OpenAI-compatible LLM endpoint |
+| `:6333` | Qdrant | Vector database |
+| `:6379` | Redis | Memory cache (short-term + entity) |
+| `:5432` | Postgres | Audit log + conversation summaries |
+| `:4000` | LiteLLM Proxy | Multi-provider router (optional, `full` profile) |
+| `:8888` | SearXNG | Self-hosted search engine (optional) |
 
-### 1.3. Frontend’i Çalıştır
+### 1.3 Launch Frontend
 
-Frontend şu an Docker içinde değil; ayrı bir terminalde:
+The frontend runs as a separate Next.js dev server:
 
 ```bash
 cd frontend
@@ -56,219 +112,416 @@ npm install
 npm run dev
 ```
 
-Varsayılan adres: `http://localhost:3000`  
-Frontend, backend ile `NEXT_PUBLIC_API_URL` üzerinden konuşur (default `http://localhost:8000`).
+Open `http://localhost:3000` in your browser.  
+The frontend communicates with the backend via `NEXT_PUBLIC_API_URL` (default: `http://localhost:8000`).
 
-### 1.4. Orchestrator’ı Doğrula
-
-Backend health endpoint’i:
+### 1.4 Verify Health
 
 ```bash
 curl http://localhost:8000/health | jq
 ```
 
-Her şey doğruysa:
+Expected response:
 
-- `status: "healthy"`
-- `vectorstore: true`
-- `memory: true` (MEMORY_ENABLED=true ise)
+```json
+{
+  "status": "healthy",
+  "vectorstore": true,
+  "memory": true,
+  "provider": "VllmProvider",
+  "model": "Qwen/Qwen3-8B-AWQ",
+  "uptime_seconds": 42.5
+}
+```
 
 ---
 
-## 2. Geliştirme (lokal Python ortamı)
+## 2. Local Development
 
-### 2.1. Python bağımlılıkları
+### 2.1 Install Dependencies
 
-Projede `uv` kullanımı tavsiye edilir:
+The project uses [`uv`](https://github.com/astral-sh/uv) as package manager:
 
 ```bash
+# Recommended
 uv sync
-# veya
+
+# Or with pip
 pip install .
 ```
 
-### 2.2. Orchestrator’ı lokalde çalıştırma
+### 2.2 Run Orchestrator Locally
 
-Docker yerine doğrudan lokalde çalıştırmak istersen (Qdrant, Redis, Postgres yine container olabilir):
+If you prefer to run the orchestrator directly on the host (while infra services stay in containers):
 
 ```bash
-# Gerekli servisler (eğer docker-compose'tan ayrı yönetmek istiyorsan)
+# Start only infrastructure services
 docker compose up -d qdrant redis postgres vllm
 
-# Orchestrator (FastAPI)
+# Run the orchestrator
 uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Bu durumda de‑facto topoloji:
+Default connection URLs (set in `.env`):
 
-- vLLM → `VLLM_SERVER_URL=http://localhost:8080/v1`
-- Qdrant → `QDRANT_URL=http://localhost:6333`
-- Redis → `REDIS_URL=redis://localhost:6379/0`
-- Postgres → `POSTGRES_URL=postgresql://rag:rag@localhost:5432/rag`
+```
+VLLM_SERVER_URL=http://localhost:8080/v1
+QDRANT_URL=http://localhost:6333
+REDIS_URL=redis://localhost:6379/0
+POSTGRES_URL=postgresql://rag:rag@localhost:5432/rag
+```
 
----
+### 2.3 CLI Mode
 
-## 3. Güvenlik ve Çok Tenant Desteği
+For quick testing without the API server:
 
-### 3.1. API Key ve JWT
+```bash
+python main.py
+```
 
-Orchestrator, iki katmanlı auth destekler:
-
-- **API Key** (opsiyonel, “paylaşılan gizli”):
-  - `API_KEY` env set edilirse, tüm istekler `X-API-Key` header’ı ile bu değeri taşımak zorunda.
-- **JWT** (prod için tavsiye edilen):
-  - `JWT_SECRET_KEY` ve (isteğe bağlı) `JWT_ALGORITHM` (varsayılan `HS256`) set edildiğinde,
-  - `Authorization: Bearer <jwt>` header’ı zorunlu hale gelir.
-  - JWT payload beklentisi (claims):
-    - `user_id` veya `sub`
-    - `department_id` (veya `dept`)
-    - `role`
-
-Local/dev modda JWT kullanmak istemezsen:
-
-- `JWT_SECRET_KEY` set **etme**,
-- Departman bilgisini frontend’in gönderdiği `X-Department-ID` header’ı üzerinden al (Chat UI bunu zaten ayarlıyor).
-
-### 3.2. Departman Bazlı RAG İzolasyonu
-
-İki seviye izolasyon vardır:
-
-- **Default mod** (varsayılan):
-  - Tek Qdrant collection (`QDRANT_COLLECTION`, default `rag_collection`).
-  - Her chunk’ın `metadata.department_id` alanı set edilir.
-  - `search_documents` tool’u, `department_id` üzerinden Qdrant `Filter` ile sadece o departmanın chunk’larını görür.
-- **Strict mod**:
-  - Env: `RAG_MULTI_TENANT_STRICT=true`
-  - Her departman için ayrı collection:
-    - `rag_collection_engineering`, `rag_collection_finance` gibi.
-  - `RagApp.ingest_paths` ve `delete_paths`, departman bazlı collection’a yazar/siler.
-  - `search_documents`, kullanım anındaki `department_id` için doğru collection’ı seçer.
-
-### 3.3. Memory Isolation
-
-Multi‑tier memory şu bileşenlerden oluşur:
-
-- **Short-term** (Redis) → son N turn, session bazlı.
-- **Entity memory** (Redis hash) → kullanıcı profili.
-- **Episodic memory** (Qdrant) → uzun dönem “anılar”.
-- **Summaries** (Postgres) → conversation özetleri.
-
-İki çalışma modu:
-
-- Default:
-  - Redis key’leri `session_id` ve `entity_id` üzerinden; `session_id` zaten `department_id:user_id:...` formatında üretildiği için pratikte çakışma riski düşük.
-  - Episodic memory tek `MEMORY_EPISODIC_COLLECTION` içinde.
-- Strict:
-  - Env: `MEMORY_MULTI_TENANT_STRICT=true`
-  - Short-term key’leri `"<dept>:<session_id>"`,
-  - Entity key’leri `"<dept>:<entity_id>"`,
-  - Episodic collection’lar: `memory_collection_<dept>`.
+This starts an interactive CLI loop with the full agent pipeline.
 
 ---
 
-## 4. Multi-Agent Orkestrasyon
+## 3. Configuration
 
-Backend tarafında LangGraph ile kurulmuş iki katman vardır:
+All configuration is managed through environment variables. Copy the example file to get started:
 
-- **ResearchAgent** (`build_research_agent_graph`):
-  - Tool set: `search_documents`, `web_search`, `calculator` (+ opsiyonel MCP).
-  - RAG + multi‑layer memory + hybrid retrieval + rerank + ReAct döngüsü.
-- **Supervisor Agent** (`build_agent_graph`):
-  - Gelen state’i analiz eder ve alt‑agent’a yönlendirir:
-    - Mesaj `[MCP]` veya `[MCP:...]` ile başlıyorsa → **ExecutionAgent**.
-    - Aksi durumda → **ResearchAgent**.
-- **ExecutionAgent** (basit v1):
-  - Tool set: MCP odaklı (`read_file`, `list_directory`, `write_file`, `execute_python`, `run_bash`, `query_postgres`, `memory_search`).
-  - Kısa bir “eylem odaklı” system prompt ile LLM’i sadece tool çağrıları ve sonuç raporlamaya odaklar.
+```bash
+cp .env.example .env
+```
 
-Uygulamanın `/chat` ve `/chat/sync` endpoint’leri her zaman Supervisor üzerinden gider; UI tarafında `[MCP]` prefix’i `MessageInput` tarafından otomatik eklenir (MCP modu açıkken).
+### Key Environment Variables
 
----
+<details>
+<summary><b>LLM & Providers</b></summary>
 
-## 5. Frontend Özellikleri
+| Variable | Default | Description |
+|---|---|---|
+| `VLLM_SERVER_URL` | — | vLLM OpenAI-compatible endpoint (required) |
+| `VLLM_MODEL` | `Qwen/Qwen3-8B-AWQ` | Model name served by vLLM |
+| `LLM_TEMPERATURE` | `0.7` | Sampling temperature |
+| `LLM_MAX_TOKENS` | `512` | Maximum generation tokens |
+| `LLM_TOP_P` | `0.95` | Top-p nucleus sampling |
+| `LLM_ENABLE_THINKING` | `false` | Enable Qwen3 thinking mode |
+| `OPENAI_API_KEY` | — | OpenAI API key (for provider switching) |
+| `LITELLM_BASE_URL` | `http://localhost:4000/v1` | LiteLLM proxy endpoint |
 
-Frontend, `frontend` klasöründe **Next.js App Router** ile implement edilmiştir:
+</details>
 
-- **Chat arayüzü**:
-  - RAG toggle (yerel dokümanlar vs yalnızca LLM),
-  - “İnternette Ara” modu (`[WEB_ONLY]` prefix),
-  - MCP modu ve hazır MCP presetleri (dosya alanı, Postgres, hafıza arama),
-  - Dosya upload (PDF/TXT, ingestion pipeline’a bağlı),
-  - Mesajlara bağlı kaynak listesi (RAG chunk’ları ve web URL’leri),
-  - Token & latency badge’leri.
-- **Departman seçici**:
-  - Header ve Settings altında “Departman” dropdown’ı,
-  - Seçim `X-Department-ID` header’ına yansıtılır; backend’de hem RAG izolasyonu hem de MCP PolicyEngine kullanır.
-- **Agent Status paneli**:
-  - Sidebar’da “Agent Durumu” kutusu,
-  - `/ws/tasks/{task_id}` WebSocket akışından gelen status (running/completed/error) + son güncelleme zamanı gösterilir.
-- **Monitoring sekmesi**:
-  - Aktif sohbet için basit metrikler (turn sayısı, toplam token, ortalama latency),
-  - `LANGCHAIN_TRACING_V2` + `LANGCHAIN_API_KEY` ile LangSmith entegrasyonu hakkında açıklama,
-  - `GET /metrics/summary` üzerinden departman bazlı özet (istek sayısı, ortalama latency, toplam token) kartları.
+<details>
+<summary><b>Retrieval & Reranking</b></summary>
 
----
+| Variable | Default | Description |
+|---|---|---|
+| `RAG_RETRIEVAL_STRATEGY` | `hybrid` | Strategy: `hybrid` / `similarity` / `mmr` / `threshold` / `auto` |
+| `RAG_BASE_K` | `8` | Base number of chunks to retrieve |
+| `RAG_BM25_WEIGHT` | `0.4` | BM25 weight in hybrid search (RRF) |
+| `RAG_CHUNK_SIZE` | `1000` | Document chunk size (characters) |
+| `RAG_CHUNK_OVERLAP` | `200` | Chunk overlap |
+| `RERANKER_MODEL` | `default` | Reranker model: `default` (BAAI/bge-reranker-base) / `fast` / custom HF model |
+| `RERANK_FAST_MODE` | `false` | Skip reranking for simple queries |
+| `LOCAL_SEARCH_CONF_THRESHOLD` | `0.35` | Confidence threshold for local search results |
 
-## 6. Başlıca Endpoint’ler
+</details>
 
-Tüm endpoint’ler `http://localhost:8000` üzerindedir (orchestrator container’ı).
+<details>
+<summary><b>Memory</b></summary>
 
-- **Chat (streaming)**  
-  `POST /chat`
+| Variable | Default | Description |
+|---|---|---|
+| `MEMORY_ENABLED` | `false` | Enable multi-layer memory system |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
+| `MEMORY_SHORT_TERM_TTL` | `7200` | Short-term memory TTL (seconds) |
+| `MEMORY_SHORT_TERM_MAX_TURNS` | `20` | Max conversation turns in buffer |
+| `SUMMARY_TRIGGER_TURNS` | `20` | Auto-generate summary after N turns |
 
-  Gövde:
+</details>
 
-  ```json
-  {
-    "message": "Q3 bütçe sapmalarını özetle",
-    "use_rag": true
-  }
-  ```
+<details>
+<summary><b>Security & Multi-Tenancy</b></summary>
 
-  - SSE event’leri:
-    - `event: token` → `{ "text": "..." }`
-    - `event: sources` → RAG kaynak listesi
-    - `event: done` → `{ "session_id", "latency_ms", "token_count" }`
+| Variable | Default | Description |
+|---|---|---|
+| `API_KEY` | — | Static API key (optional, requires `X-API-Key` header) |
+| `JWT_SECRET_KEY` | — | Enable JWT auth (requires `Authorization: Bearer` header) |
+| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
+| `RAG_MULTI_TENANT_STRICT` | `false` | Separate Qdrant collection per department |
+| `MEMORY_MULTI_TENANT_STRICT` | `false` | Department-prefixed memory keys |
+| `DEFAULT_DEPARTMENT_ID` | `default` | Fallback department for non-JWT requests |
 
-- **Chat (sync)**  
-  `POST /chat/sync` → tek JSON cevap (`answer`, `sources`, `latency_ms`, `used_provider`).
+</details>
 
-- **Ingestion**  
-  - `POST /ingest` → path listesi ile incremental ingest
-  - `POST /ingest/upload` → multipart dosya upload + ingest
-  - `POST /ingest/delete` → ingest edilen dosyaları sil (Qdrant + registry + disk)
+<details>
+<summary><b>Tools & MCP</b></summary>
 
-- **LLM Provider Config**  
-  - `GET /config/llm` → aktif provider/model
-  - `PUT /config/llm` → provider/model/base_url değiştir (vLLM / OpenAI / LiteLLM).
+| Variable | Default | Description |
+|---|---|---|
+| `TAVILY_API_KEY` | — | Tavily API key for web search |
+| `MCP_SERVER_URL` | — | FastMCP server endpoint (optional) |
+| `MCP_TIMEOUT` | `30` | MCP tool invocation timeout (seconds) |
+| `MCP_ALLOWED_TOOLS` | — | Comma-separated whitelist of MCP tools |
 
-- **Metrics**  
-  - `GET /metrics/summary` → Postgres audit tablosundan departman/agent bazlı özet.
-
-- **Health**  
-  - `GET /health` → orchestrator durumu.
-
----
-
-## 7. Örnek Çalıştırma Senaryosu
-
-1. `docker compose up -d` ile tüm backend’i ayağa kaldır.
-2. `cd frontend && npm run dev` ile chat UI’yi aç.
-3. Tarayıcıda `http://localhost:3000`:
-   - Settings’ten `Backend API Anahtarı` gir (eğer `API_KEY` tanımladıysan),
-   - Departmanını seç (ör. Engineering).
-4. Birkaç PDF yükle (Sidebar’daki “Data Alanı”ndan veya message composer’dan).
-5. Chat’te sor:
-   - “Bu architecture dokümanına göre RAG pipeline’ı özetle.”
-   - “MCP dosya çalışma alanı preset’ini kullanarak /data altındaki dosyaları listele.”
-6. Settings → Monitoring sekmesinden:
-   - Aktif sohbet metriklerini ve `Son Özeti Yükle` ile departman bazlı istatistikleri izle.
+</details>
 
 ---
 
-## 8. Notlar ve Geliştirme Yönleri
+## 4. Security & Multi-Tenancy
 
-- Qdrant strict multi‑tenant ve Memory strict modları tamamen **opsiyonel**; varsayılan ayarlar tek tenant dev ortam için optimize edilmiştir.
-- Supervisor şu anda iki alt‑agent’i (Research + Execution) route ediyor; Analytics/Document/Notification agent’ları için altyapı hazır.
-- Metrics API v1, Postgres audit tablosundan basit agregatlar sağlıyor; daha ileri seviye cost/latency dashboard’ları için materialized view’lar ve tarih filtresi eklenebilir.
+### 4.1 Authentication
 
+The orchestrator supports two-layer authentication:
+
+- **API Key** (optional, shared secret):
+  - Set `API_KEY` env → all requests must include `X-API-Key` header.
+- **JWT** (recommended for production):
+  - Set `JWT_SECRET_KEY` and optionally `JWT_ALGORITHM`.
+  - `Authorization: Bearer <token>` header becomes mandatory.
+  - Expected JWT claims: `user_id` (or `sub`), `department_id` (or `dept`), `role`.
+
+> **Local/Dev mode:** If `JWT_SECRET_KEY` is not set, JWT auth is disabled. Department info can be sent via the `X-Department-ID` header (the frontend does this automatically).
+
+### 4.2 Department-Based RAG Isolation
+
+Two isolation levels are available:
+
+| Mode | Setting | Behavior |
+|------|---------|----------|
+| **Default** | (default) | Single Qdrant collection with `metadata.department_id` filter per query |
+| **Strict** | `RAG_MULTI_TENANT_STRICT=true` | Separate collections per department (`rag_collection_engineering`, `rag_collection_finance`, etc.) |
+
+### 4.3 Memory Isolation
+
+The multi-tier memory system consists of:
+
+| Layer | Backend | Scope |
+|-------|---------|-------|
+| **Short-term** | Redis | Last N turns, session-based |
+| **Entity memory** | Redis hash | Per-user profile data |
+| **Episodic memory** | Qdrant | Long-term "memories" |
+| **Summaries** | Postgres | Conversation summaries |
+
+With `MEMORY_MULTI_TENANT_STRICT=true`, all memory keys and collections are prefixed with the department ID.
+
+---
+
+## 5. Multi-Agent Orchestration
+
+The backend uses LangGraph to implement a two-tier agent architecture:
+
+### Supervisor Agent
+- Analyzes incoming state and routes to the appropriate sub-agent.
+- Messages starting with `[MCP]` or `[MCP:...]` → **Execution Agent**.
+- All other messages → **Research Agent**.
+
+### Research Agent
+- **Tools:** `search_documents`, `web_search`, `calculator` (+ optional MCP tools)
+- Full RAG + multi-layer memory + hybrid retrieval + reranking + ReAct loop.
+
+### Execution Agent
+- **Tools:** MCP-focused (`read_file`, `list_directory`, `write_file`, `execute_python`, `run_bash`, `query_postgres`, `memory_search`).
+- Action-oriented system prompt focusing on tool calls and result reporting.
+
+### Retrieval Pipeline
+
+```
+User Query
+  ├── Dynamic K calculation (based on query complexity)
+  ├── Auto strategy selection (similarity / mmr / hybrid / threshold)
+  ├── Vector search (Qdrant, BAAI/bge-m3 embeddings)
+  ├── BM25 keyword search (parallel)
+  ├── RRF merge (Reciprocal Rank Fusion)
+  ├── Cross-encoder reranking (BAAI/bge-reranker-base)
+  └── Top-K selection with confidence scoring
+```
+
+---
+
+## 6. API Reference
+
+All endpoints are served at `http://localhost:8000`.
+
+### Chat
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/chat` | SSE streaming chat (agentic RAG) |
+| `POST` | `/chat/sync` | Synchronous chat (returns full response) |
+
+**Request body:**
+
+```json
+{
+  "message": "Summarize the Q3 budget deviations",
+  "use_rag": true,
+  "llm_provider": null
+}
+```
+
+**SSE events** (`/chat`):
+- `event: token` → `{ "text": "..." }` — streaming text fragment
+- `event: sources` → `[{ "chunk_id": 1, "source": "report.pdf", "page": "p.5", "snippet": "..." }]`
+- `event: done` → `{ "session_id": "...", "latency_ms": 1234.56, "token_count": 128 }`
+
+### Ingestion
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/ingest` | Ingest documents by file path (incremental, hash-based dedup) |
+| `POST` | `/ingest/upload` | Upload files (PDF/TXT) for ingestion |
+| `POST` | `/ingest/delete` | Delete ingested documents |
+
+### Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/config/llm` | Current LLM provider and model info |
+| `PUT` | `/config/llm` | Switch LLM provider at runtime (vLLM / OpenAI / LiteLLM) |
+
+### System
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | System health check |
+| `GET` | `/metrics/summary` | Department & agent metrics (from audit log) |
+| `WS` | `/ws/tasks/{task_id}` | WebSocket for real-time task status updates |
+
+---
+
+## 7. Frontend Features
+
+The frontend is built with **Next.js App Router** (located in `frontend/`):
+
+- **Chat Interface**
+  - RAG toggle (local documents vs. plain LLM)
+  - "Search Web" mode (`[WEB_ONLY]` prefix)
+  - MCP mode with preset commands (filesystem, Postgres, memory search)
+  - File upload (PDF/TXT → ingestion pipeline)
+  - Source citation panel (RAG chunks and web URLs)
+  - Token count & latency badges
+
+- **Department Selector**
+  - Dropdown in header and settings
+  - Selection maps to `X-Department-ID` header → enables RAG isolation + MCP policy engine
+
+- **Agent Status Panel**
+  - Sidebar widget showing real-time agent status (running / completed / error)
+  - Powered by `/ws/tasks/{task_id}` WebSocket
+
+- **Monitoring Tab**
+  - Per-session metrics (turn count, total tokens, average latency)
+  - LangSmith integration guidance
+  - Department-level summary cards from `GET /metrics/summary`
+
+---
+
+## 8. Project Structure
+
+```
+vLLM_rag/
+├── api/
+│   ├── app.py              # FastAPI gateway (endpoints, SSE, WebSocket)
+│   └── metrics.py          # Metrics API router
+├── src/
+│   ├── agent.py            # LangGraph agent (Supervisor + Research + Execution)
+│   ├── app_orchestrator.py # Application orchestrator (builds the full pipeline)
+│   ├── audit.py            # Append-only audit logger (Postgres)
+│   ├── config.py           # Centralized configuration
+│   ├── context.py          # Request context (JWT claims, department, session)
+│   ├── llm.py              # vLLM ChatOpenAI wrapper
+│   ├── llm_provider.py     # Multi-provider router (vLLM / OpenAI / LiteLLM)
+│   ├── loader.py           # Document loader (PDF, TXT)
+│   ├── memory.py           # Multi-layer memory (Redis + Qdrant + Postgres)
+│   ├── policy.py           # Department × MCP permission matrix
+│   ├── prompting.py        # RAG prompt templates
+│   ├── query_translation.py# Multi-query generation
+│   ├── reranker.py         # Cross-encoder reranking
+│   ├── retriever.py        # Hybrid retrieval (Vector + BM25 + RRF)
+│   ├── splitter.py         # Text splitting (recursive / semantic)
+│   ├── tasks.py            # Task registry for long-running operations
+│   ├── tooling.py          # MCP + Local tool invocation abstraction
+│   ├── tools.py            # Agent tools (search_documents, web_search, calculator)
+│   ├── tracing.py          # Observability abstraction
+│   └── vectorstore.py      # Qdrant vector database operations
+├── frontend/               # Next.js chat UI
+├── scripts/
+│   ├── benchmark.py        # Performance benchmark runner
+│   ├── reset_qdrant.py     # Qdrant collection reset utility
+│   └── serve_vllm.sh       # vLLM server startup script
+├── config/
+│   └── litellm-config.yaml # LiteLLM proxy configuration
+├── main.py                 # CLI entry point
+├── docker-compose.yml      # Full stack deployment
+├── Dockerfile              # Orchestrator container
+├── pyproject.toml          # Python dependencies
+└── .env.example            # Environment variable template
+```
+
+---
+
+## 9. Example Workflow
+
+1. **Start the backend:**
+   ```bash
+   docker compose up -d
+   ```
+
+2. **Launch the frontend:**
+   ```bash
+   cd frontend && npm install && npm run dev
+   ```
+
+3. **Open the UI** at `http://localhost:3000`:
+   - Enter your API key in Settings (if `API_KEY` is configured).
+   - Select your department (e.g., Engineering).
+
+4. **Upload documents** via the sidebar or message composer (PDF/TXT).
+
+5. **Ask questions:**
+   - `"Summarize the RAG pipeline from the architecture document."`
+   - `"List the files under /data using the MCP filesystem preset."`
+
+6. **Monitor** from Settings → Monitoring:
+   - View active session metrics and department-level statistics.
+
+---
+
+## 10. Benchmarking
+
+Run performance benchmarks against the full pipeline:
+
+```bash
+python scripts/benchmark.py \
+  --dataset benchmarks/test_queries.csv \
+  --mode agent \
+  --runs 3 \
+  --concurrency 1 \
+  --use-rerank \
+  --strategy auto \
+  --output logs/benchmark_results.jsonl
+```
+
+The benchmark runner measures:
+- End-to-end latency (p50, p95)
+- Retrieval time
+- LLM generation time
+- Time to first token (TTFT, streaming mode)
+- GPU utilization stats
+- Throughput (requests/second)
+
+---
+
+## 11. Notes & Roadmap
+
+- **Multi-tenant modes** (Qdrant strict + Memory strict) are fully **optional**; defaults are optimized for single-tenant dev environments.
+- The **Supervisor** currently routes between Research and Execution agents; the architecture supports additional agents (Analytics, Document, Notification) with minimal changes.
+- **Metrics API v1** provides simple aggregates from the Postgres audit table; materialized views and date filters can be added for advanced cost/latency dashboards.
+- The **LLM provider** can be switched at runtime via `PUT /config/llm` without restarting the system (vLLM ↔ OpenAI ↔ LiteLLM with automatic fallback chains).
+
+---
+
+<div align="center">
+
+**Built with** 🐍 Python · ⚡ FastAPI · 🦜 LangGraph · 🚀 vLLM · 🔍 Qdrant
+
+</div>

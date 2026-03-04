@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 """
-Basit metrics API'si: departman ve agent bazinda istek sayisi, gecikme ve token ozetleri.
+Simple metrics API: request count, latency, and token summaries by department and agent.
 
-Veri kaynagi: src/audit.py tarafindan doldurulan audit_events tablosu.
+Data source: audit_events table populated by src/audit.py.
 """
 
 import os
@@ -24,14 +24,14 @@ def _get_connection():
 @router.get("/summary")
 def metrics_summary() -> Dict[str, Any]:
     """
-    Basit ozet:
-    - departman bazinda: toplam istek, ortalama latency, toplam token
-    - agent turu bazinda: toplam istek
+    Simple summary:
+    - Per department: total requests, average latency, total tokens
+    - Per agent type: total requests
     """
     try:
         conn = _get_connection()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Postgres bağlantısı kurulamadı: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not connect to Postgres: {exc}")
 
     try:
         with conn.cursor() as cur:
@@ -92,4 +92,3 @@ def metrics_summary() -> Dict[str, Any]:
             conn.close()
         except Exception:
             pass
-

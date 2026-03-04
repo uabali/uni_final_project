@@ -3,8 +3,8 @@ from __future__ import annotations
 """
 Tracing / observability abstraction.
 
-architecture.pdf'teki LangSmith/observability katmanina karsi gelir.
-Varsayilan olarak no-op'tur; LangSmith veya farkli bir backend eklenebilir.
+Corresponds to the LangSmith/observability layer in architecture.pdf.
+No-op by default; LangSmith or a different backend can be added.
 """
 
 import os
@@ -37,9 +37,8 @@ class NoopTracer(Tracer):
 
 def get_tracer() -> Tracer:
     """
-    Simdilik sadece NoopTracer dondurur.
-    Ileride LANGCHAIN_TRACING_V2 veya ozel bir backend'e gore degistirilebilir.
+    Returns NoopTracer for now.
+    Can be changed in the future based on LANGCHAIN_TRACING_V2 or a custom backend.
     """
     _ = os.getenv("LANGCHAIN_TRACING_V2", "")
     return NoopTracer()
-

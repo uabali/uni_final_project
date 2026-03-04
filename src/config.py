@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 """
-Merkezi uygulama/config katmani.
+Central application/config layer.
 
-Buradaki amac:
-- Model ve sampling ayarlarinin tek bir yerden okunmasi
-- vLLM server URL ve model adinin hem Python tarafinda hem de
-  deployment (docker-compose, local script) tarafinda tutarli olmasi
+Purpose:
+- Read model and sampling settings from a single place
+- Keep vLLM server URL and model name consistent between the Python side
+  and deployment (docker-compose, local script) side
 """
 
 import os
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """LLM/vLLM baglantisi icin temel ayarlar."""
+    """Base settings for LLM/vLLM connection."""
 
     name: str
     server_url: str
@@ -49,16 +49,16 @@ def _get_env_int(key: str, default: int) -> int:
 
 def load_model_config() -> ModelConfig:
     """
-    Ortak model config'ini ENV uzerinden yukler.
+    Loads the shared model config from ENV.
 
-    Onemli ENV degiskenleri:
-    - VLLM_MODEL:    vLLM tarafinda serve edilen model adi
-    - VLLM_SERVER_URL: OpenAI-compatible endpoint (ornegin http://localhost:6365/v1)
+    Important ENV variables:
+    - VLLM_MODEL:    Model name served by vLLM
+    - VLLM_SERVER_URL: OpenAI-compatible endpoint (e.g. http://localhost:6365/v1)
     - LLM_TEMPERATURE, LLM_MAX_TOKENS, LLM_TOP_P
     - LLM_ENABLE_THINKING: "true"/"false"
     """
 
-    # Hem local script hem docker-compose tarafinin paylastigi model adi.
+    # Model name shared by both the local script and docker-compose.
     model_name = os.getenv("VLLM_MODEL", "Qwen/Qwen3-8B-AWQ").strip()
 
     server_url = os.getenv("VLLM_SERVER_URL", "").strip()
@@ -67,7 +67,7 @@ def load_model_config() -> ModelConfig:
     max_new_tokens = _get_env_int("LLM_MAX_TOKENS", 512)
     top_p = _get_env_float("LLM_TOP_P", 0.95)
 
-    # Frekans/presence penalty'ler simdilik sabit ama ileride ENV'e acik.
+    # Frequency/presence penalties are currently fixed but open to ENV in the future.
     frequency_penalty = _get_env_float("LLM_FREQUENCY_PENALTY", 0.0)
     presence_penalty = _get_env_float("LLM_PRESENCE_PENALTY", 0.85)
 
@@ -83,4 +83,3 @@ def load_model_config() -> ModelConfig:
         presence_penalty=presence_penalty,
         enable_thinking=enable_thinking,
     )
-

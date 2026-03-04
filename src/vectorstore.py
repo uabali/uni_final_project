@@ -1,8 +1,8 @@
 """
-Vektör Veritabanı Modülü - Qdrant Backend
+Vector Database Module - Qdrant Backend
 
-Metinleri sayısal vektörlere (embedding) çevirir ve Qdrant veritabanına kaydeder.
-Incremental Indexing (Ekle/Sil) desteği sunar.
+Converts texts to numerical vectors (embeddings) and stores them in Qdrant database.
+Supports Incremental Indexing (Add/Delete).
 """
 
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -17,7 +17,7 @@ from pathlib import Path
 
 def create_embeddings(model_name="BAAI/bge-m3", device="cuda"):
     """
-    BAAI/bge-m3 (SOTA multilingual) embedding modelini oluşturur.
+    Creates the BAAI/bge-m3 (SOTA multilingual) embedding model.
     """
     return HuggingFaceEmbeddings(
         model_name=model_name,
@@ -59,14 +59,14 @@ def _save_fingerprint(collection_name: str, fingerprint: str) -> None:
 
 def is_multi_tenant_strict() -> bool:
     """
-    RAG_MULTI_TENANT_STRICT=true ise her departman icin ayri Qdrant collection kullan.
-    Varsayilan: false (tek collection + department_id payload filtresi).
+    If RAG_MULTI_TENANT_STRICT=true, use separate Qdrant collection per department.
+    Default: false (single collection + department_id payload filter).
     """
     return os.getenv("RAG_MULTI_TENANT_STRICT", "false").strip().lower() == "true"
 
 
 def _normalize_namespace(name: str) -> str:
-    """Departman kimligini Qdrant collection icin guvenli bir isme cevirir."""
+    """Converts a department identifier to a safe name for Qdrant collections."""
     import re
 
     s = (name or "").strip().lower()
@@ -79,9 +79,9 @@ def _normalize_namespace(name: str) -> str:
 
 def build_collection_name(base: str, department_id: str | None) -> str:
     """
-    Base collection adindan departman spesifik collection adi uretir.
+    Generates a department-specific collection name from the base collection name.
 
-    strict mod kapaliysa her zaman base doner.
+    If strict mode is off, always returns base.
     """
     if not is_multi_tenant_strict() or not department_id:
         return base
@@ -89,7 +89,7 @@ def build_collection_name(base: str, department_id: str | None) -> str:
 
 
 def _wait_for_qdrant(client: QdrantClient, url: str) -> None:
-    """Qdrant yeni kalkarken kisa sureli connection hatalarina karsi bekler."""
+    """Waits for Qdrant to become ready during startup (handles brief connection errors)."""
     try:
         timeout_s = float(os.getenv("QDRANT_STARTUP_TIMEOUT", "20").strip())
     except Exception:
@@ -112,8 +112,8 @@ def _wait_for_qdrant(client: QdrantClient, url: str) -> None:
             last_exc = exc
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f"Qdrant baglantisi kurulamadı: {url}. "
-                    "Servisin ayakta oldugunu ve portun acik oldugunu kontrol edin."
+                    f"Could not connect to Qdrant: {url}. "
+                    "Please check that the service is running and the port is open."
                 ) from last_exc
             time.sleep(retry_s)
 
@@ -122,11 +122,11 @@ def create_vectorstore(
     docs, embeddings, url="http://localhost:6333", collection_name="rag_collection"
 ):
     """
-    Qdrant vektör veritabanını oluşturur veya mevcut olanı yükler.
+    Creates or loads the Qdrant vector database.
 
-    1. Collection varsa -> mevcut veriyi yükler.
-    2. Collection yoksa ve docs varsa -> yeni oluşturur.
-    3. İkisi de yoksa -> boş store döner.
+    1. If collection exists -> loads existing data.
+    2. If collection doesn't exist and docs are provided -> creates new.
+    3. If neither -> returns empty store.
     """
     client = QdrantClient(url=url)
     _wait_for_qdrant(client, url)
@@ -149,8 +149,8 @@ def create_vectorstore(
 
         if should_reindex:
             print(
-                f"Mevcut Qdrant collection bulundu ({collection_name}); "
-                "dokuman degisikligi algilandi, yeniden indexleniyor..."
+                f"Existing Qdrant collection found ({collection_name}); "
+                "document changes detected, re-indexing..."
             )
             try:
                 client.delete_collection(collection_name=collection_name)
@@ -166,20 +166,20 @@ def create_vectorstore(
                 _save_fingerprint(collection_name, current_fp)
             return vectorstore
 
-        print(f"Mevcut Qdrant veritabani yukleniyor: {collection_name}")
+        print(f"Loading existing Qdrant database: {collection_name}")
         if docs and reindex_mode == "false":
             print(
-                "Not: Yerel dokuman degisiklikleri indexe yansimaz "
+                "Note: Local document changes will not be reflected in the index "
                 "(QDRANT_AUTO_REINDEX=false)."
             )
         if docs and reindex_mode == "smart":
-            print("Not: QDRANT_AUTO_REINDEX=smart, degisiklik yoksa yeniden indexlenmez.")
+            print("Note: QDRANT_AUTO_REINDEX=smart, no re-indexing if no changes detected.")
         return QdrantVectorStore(
             client=client, collection_name=collection_name, embedding=embeddings
         )
 
     if docs:
-        print(f"Yeni Qdrant veritabani olusturuluyor: {collection_name}")
+        print(f"Creating new Qdrant database: {collection_name}")
         vectorstore = QdrantVectorStore.from_documents(
             documents=docs,
             embedding=embeddings,
@@ -190,26 +190,26 @@ def create_vectorstore(
             _save_fingerprint(collection_name, current_fp)
         return vectorstore
 
-    print("Uyari: Collection yok ve dokuman verilmedi. Bos donecek.")
+    print("Warning: No collection exists and no documents provided. Returning empty store.")
     return QdrantVectorStore(
         client=client, collection_name=collection_name, embedding=embeddings
     )
 
 
 def add_documents_to_collection(vectorstore, docs):
-    """Mevcut veritabanına yeni dokümanlar ekler (incremental)."""
+    """Adds new documents to the existing database (incremental)."""
     if not docs:
         return
     vectorstore.add_documents(docs)
-    print(f"{len(docs)} chunk vektör veritabanına eklendi.")
+    print(f"{len(docs)} chunks added to vector database.")
 
 
 def delete_from_collection(vectorstore, file_path, department_id: str | None = None):
-    """Belirli bir dosyaya ait tüm chunk'ları Qdrant'tan siler.
+    """Deletes all chunks belonging to a specific file from Qdrant.
 
-    Eğer department_id verilmişse, sadece o departmana ait payload'lar silinir.
+    If department_id is provided, only payloads for that department are deleted.
     """
-    print(f"Siliniyor: {file_path} (department={department_id or 'ANY'})")
+    print(f"Deleting: {file_path} (department={department_id or 'ANY'})")
     must_conditions = [
         models.FieldCondition(
             key="source", match=models.MatchValue(value=file_path)
@@ -228,7 +228,7 @@ def delete_from_collection(vectorstore, file_path, department_id: str | None = N
         collection_name=vectorstore.collection_name,
         points_selector=models.FilterSelector(filter=info_filter),
     )
-    print("Silme islemi tamamlandi.")
+    print("Delete operation completed.")
 
 
 def get_vectorstore_for_department(
@@ -237,11 +237,11 @@ def get_vectorstore_for_department(
     department_id: str | None,
 ) -> QdrantVectorStore:
     """
-    Strict multi-tenant modda, verilen departman icin ayri bir QdrantVectorStore dondurur.
+    In strict multi-tenant mode, returns a separate QdrantVectorStore for the given department.
 
-    - strict=false veya department_id yoksa → base_vectorstore
-    - strict=true → base_collection_name + department_id ile yeni collection adi olusturulur.
-      Eger bu isim zaten base_vectorstore.collection_name ise ayni instance geri doner.
+    - strict=false or no department_id → base_vectorstore
+    - strict=true → new collection name created from base_collection_name + department_id.
+      If this name already matches base_vectorstore.collection_name, returns the same instance.
     """
     if not is_multi_tenant_strict() or not department_id:
         return base_vectorstore

@@ -1,8 +1,8 @@
 """
-Query Translation Modülü
+Query Translation Module
 
-Multi-query, Step-back, HyDE gibi query transformation tekniklerini içerir.
-Bu modül, kullanıcı sorularını daha etkili retrieval için dönüştürür.
+Contains query transformation techniques such as Multi-query, Step-back, HyDE.
+This module transforms user queries for more effective retrieval.
 """
 
 from langchain_core.prompts import PromptTemplate
@@ -16,24 +16,24 @@ def generate_multi_queries(
     num_queries: int = 3
 ) -> List[str]:
     """
-    Bir soruyu birden fazla farklı şekilde ifade eder (Multi-query).
+    Rephrases a question in multiple different ways (Multi-query).
     
-    Bu teknik, bir soruyu farklı açılardan ve kelimelerle ifade ederek
-    retrieval accuracy'yi artırır. Her alternatif soru için arama yapılır
-    ve sonuçlar birleştirilir.
+    This technique rephrases a question from different angles and with different
+    wording to improve retrieval accuracy. A search is performed for each
+    alternative question and results are merged.
     
     Args:
-        question: Orijinal kullanıcı sorusu
-        llm: LLM modeli (query generation için)
-        num_queries: Üretilecek alternatif soru sayısı (varsayılan: 3)
+        question: Original user question
+        llm: LLM model (for query generation)
+        num_queries: Number of alternative questions to generate (default: 3)
         
     Returns:
-        List[str]: Orijinal soru + alternatif sorular listesi
+        List[str]: List of original question + alternative questions
         
-    Örnek:
-        >>> queries = generate_multi_queries("Python'da liste nasıl sıralanır?", llm)
-        >>> # ["Python'da liste nasıl sıralanır?", "Python list sorting methods", 
-        >>> #  "How to sort a list in Python", "Python liste sıralama yöntemleri"]
+    Example:
+        >>> queries = generate_multi_queries("How to sort a list in Python?", llm)
+        >>> # ["How to sort a list in Python?", "Python list sorting methods", 
+        >>> #  "Sort list Python tutorial", "Python list ordering techniques"]
     """
     prompt_template = """Rephrase the user's question in {num_queries} different ways.
 Each rephrased question must seek the same information but use different wording, \
@@ -57,21 +57,21 @@ Alternative questions:"""
     try:
         result = chain.invoke({"question": question, "num_queries": num_queries})
         
-        # Satırlara böl ve temizle
+        # Split into lines and clean
         queries = [q.strip() for q in result.split("\n") if q.strip()]
         
-        # Gereksiz numaraları ve işaretleri temizle (örn: "1. ", "- ", vb.)
+        # Remove unnecessary numbers and markers (e.g. "1. ", "- ", etc.)
         cleaned_queries = []
         for q in queries:
-            # Başındaki numara ve işaretleri kaldır
+            # Remove leading numbers and markers
             q = q.lstrip("0123456789.-) ").strip()
-            if q and len(q) > 5:  # Çok kısa olanları filtrele
+            if q and len(q) > 5:  # Filter out very short ones
                 cleaned_queries.append(q)
         
-        # Sadece istenen kadar al
+        # Take only the requested amount
         queries = cleaned_queries[:num_queries]
         
-        # Orijinal soruyu başa ekle (önemli: ilk sırada olmalı)
+        # Add original question at the beginning (important: must be first)
         return [question] + queries
         
     except Exception as e:
@@ -90,25 +90,25 @@ def create_multi_query_retriever(
     **retriever_kwargs
 ):
     """
-    Multi-query tekniği ile retriever oluşturur.
+    Creates a retriever using multi-query technique.
     
-    Bu fonksiyon:
-    1. Orijinal soruyu birden fazla alternatif soruya çevirir
-    2. Her soru için arama yapar
-    3. Sonuçları birleştirip tekrarları kaldırır
+    This function:
+    1. Converts the original question into multiple alternative questions
+    2. Performs a search for each question
+    3. Merges results and removes duplicates
     
     Args:
         vectorstore: Qdrant vectorstore
-        question: Orijinal kullanıcı sorusu
-        llm: LLM modeli (query generation için)
-        num_queries: Üretilecek alternatif soru sayısı
-        bm25_retriever: BM25 retriever (hybrid search için)
-        strategy: Arama stratejisi ("auto", "mmr", "similarity", "hybrid")
-        base_k: Her query için getirilecek chunk sayısı
-        **retriever_kwargs: Diğer retriever parametreleri
+        question: Original user question
+        llm: LLM model (for query generation)
+        num_queries: Number of alternative questions to generate
+        bm25_retriever: BM25 retriever (for hybrid search)
+        strategy: Search strategy ("auto", "mmr", "similarity", "hybrid")
+        base_k: Number of chunks to retrieve per query
+        **retriever_kwargs: Other retriever parameters
         
     Returns:
-        Callable: Multi-query retriever fonksiyonu
+        Callable: Multi-query retriever function
     """
     from src.retriever import create_retriever
     from src.retriever import run_retriever
@@ -122,9 +122,9 @@ def create_multi_query_retriever(
         for i, q in enumerate(queries[1:], 1):
             print(f"  Variant {i}: {q}")
     
-    # 2. Her query için retriever oluştur ve arama yap
+    # 2. Create retriever and search for each query
     all_docs = []
-    seen_ids = set()  # Tekrarları önlemek için
+    seen_ids = set()  # To prevent duplicates
     
     for query in queries:
         retriever = create_retriever(
@@ -136,28 +136,28 @@ def create_multi_query_retriever(
             **retriever_kwargs
         )
         
-        # Arama yap
+        # Perform search
         docs = run_retriever(retriever, query)
         
-        # Tekrarları filtrele (aynı içeriği farklı query'lerden gelmiş olabilir)
+        # Filter duplicates (same content may come from different queries)
         for doc in docs:
-            # Doc'un unique ID'si (içerik + metadata kombinasyonu)
+            # Unique ID for doc (content + metadata combination)
             doc_id = hash((doc.page_content[:100], doc.metadata.get("source", "")))
             if doc_id not in seen_ids:
                 seen_ids.add(doc_id)
                 all_docs.append(doc)
     
-    # 3. Sonuçları skorlarına göre sırala (ilk gelenler daha yüksek skorlu)
-    # Not: LangChain retriever'lar zaten skorlarına göre sıralı döner
+    # 3. Sort results by score (first arrivals have higher scores)
+    # Note: LangChain retrievers already return sorted by score
     
-    # 4. Top k kadar al (base_k * num_queries kadar olabilir, ama base_k ile sınırla)
-    final_docs = all_docs[:base_k * 2]  # Biraz fazla al, sonra kısaltılabilir
+    # 4. Take up to base_k (could be base_k * num_queries, but limit with base_k)
+    final_docs = all_docs[:base_k * 2]  # Take a bit more, can be trimmed later
     
     print(f"Found {len(all_docs)} unique documents, using {len(final_docs)}.")
     
-    # 5. Retriever-like fonksiyon döndür
+    # 5. Return retriever-like function
     def multi_query_retriever(query: str):
-        """Multi-query retriever - query parametresi göz ardı edilir (zaten işlendi)"""
+        """Multi-query retriever - query parameter is ignored (already processed)"""
         return final_docs
     
     return multi_query_retriever

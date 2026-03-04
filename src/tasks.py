@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 """
-Basit Task registry + izleme altyapısı.
+Simple Task registry + tracking infrastructure.
 
-Amaç:
-- Uzun sürebilen agent görevlerini (özellikle çok-ajan orkestrasyon senaryolarında)
-  tek bir yerde temsil etmek.
-- WebSocket hub'ın bu registry'yi periyodik olarak okuyarak durum güncellemelerini
-  frontend'e iletebilmesine imkan vermek.
+Purpose:
+- Represent long-running agent tasks (especially in multi-agent orchestration scenarios)
+  in a single place.
+- Allow the WebSocket hub to periodically read this registry and relay status updates
+  to the frontend.
 
-Not:
-- Şimdilik sadece bellek içi (in-memory) bir sözlük kullanıyor; proses restart'ında
-  task bilgisi kaybolur. Gerektiğinde Redis/Postgres tabanlı persistance eklenebilir.
+Note:
+- Currently uses an in-memory dictionary; task information is lost on process restart.
+  Redis/Postgres-based persistence can be added when needed.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -29,12 +29,12 @@ class TaskInfo:
     user_id: Optional[str] = None
     department_id: Optional[str] = None
     role: Optional[str] = None
-    progress: Optional[float] = None  # 0.0–1.0 arası tahmini ilerleme
+    progress: Optional[float] = None  # Estimated progress between 0.0–1.0
     last_error: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     meta: Dict[str, Any] = field(default_factory=dict)
-    version: int = 0  # WebSocket tarafında değişiklik algılama için monotonic sayaç
+    version: int = 0  # Monotonic counter for change detection on WebSocket side
 
 
 _TASKS: Dict[str, TaskInfo] = {}
@@ -50,7 +50,7 @@ def upsert_task(
     meta: Optional[Dict[str, Any]] = None,
 ) -> TaskInfo:
     """
-    Task registry'ye yeni kayıt ekler veya mevcut kaydı günceller.
+    Adds a new entry to the task registry or updates an existing one.
     """
     now = datetime.now(timezone.utc)
     existing = _TASKS.get(task_id)
@@ -85,14 +85,13 @@ def upsert_task(
 
 def get_task_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
     """
-    TaskInfo nesnesini JSON-serializable dict olarak döner (veya None).
+    Returns the TaskInfo object as a JSON-serializable dict (or None).
     """
     task = _TASKS.get(task_id)
     if task is None:
         return None
     data = asdict(task)
-    # datetime alanlarını ISO string'e çevir
+    # Convert datetime fields to ISO strings
     data["created_at"] = task.created_at.isoformat()
     data["updated_at"] = task.updated_at.isoformat()
     return data
-

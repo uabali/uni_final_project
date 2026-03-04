@@ -1,15 +1,15 @@
 """
-Re-Ranker Modülü
+Re-Ranker Module
 
-Bu modül, retrieval sonuçlarını daha güçlü bir modelle (cross-encoder) yeniden sıralar.
-Re-ranking, retrieval accuracy'yi %15-25 artırır.
+This module re-ranks retrieval results using a stronger model (cross-encoder).
+Re-ranking improves retrieval accuracy by 15-25%.
 
-Özellikler:
-- Cross-encoder modeli ile reranking
-- Skor bazlı yeniden sıralama
-- Top-k seçimi
-- TTL Cache ile tekrar eden sorgular için hızlandırma
-- Batch size optimizasyonu
+Features:
+- Cross-encoder model reranking
+- Score-based re-ordering
+- Top-k selection
+- TTL Cache for speedup on repeated queries
+- Batch size optimization
 """
 
 import os
@@ -17,54 +17,54 @@ import hashlib
 from typing import List, Optional, Tuple
 from langchain_core.documents import Document
 
-# Cache için cachetools kullan
+# Use cachetools for cache
 try:
     from cachetools import TTLCache
     CACHE_AVAILABLE = True
 except ImportError:
     CACHE_AVAILABLE = False
 
-# CrossEncoder import (sentence-transformers gerekli)
+# CrossEncoder import (requires sentence-transformers)
 try:
     from sentence_transformers import CrossEncoder
     CROSS_ENCODER_AVAILABLE = True
 except ImportError:
     CROSS_ENCODER_AVAILABLE = False
-    print("Uyarı: CrossEncoder bulunamadı. 'sentence-transformers' paketini yükleyin.")
+    print("Warning: CrossEncoder not found. Install 'sentence-transformers' package.")
 
 # ============================================================
-# RERANK CACHE (TTL Cache - 10 dakika)
+# RERANK CACHE (TTL Cache - 10 minutes)
 # ============================================================
-# maxsize: maksimum cache girisi sayisi
-# ttl: saniye cinsinden yasam suresi (600 = 10 dakika)
+# maxsize: maximum number of cache entries
+# ttl: time-to-live in seconds (600 = 10 minutes)
 _rerank_cache: Optional[TTLCache] = None
 
 def _get_rerank_cache() -> Optional[TTLCache]:
-    """Lazy initialization ile rerank cache'ini dondurur."""
+    """Returns the rerank cache with lazy initialization."""
     global _rerank_cache
     if _rerank_cache is None and CACHE_AVAILABLE:
-        cache_ttl = int(os.getenv("RERANK_CACHE_TTL", "600"))  # varsayilan 10 dakika
-        cache_size = int(os.getenv("RERANK_CACHE_SIZE", "100"))  # varsayilan 100 girdi
+        cache_ttl = int(os.getenv("RERANK_CACHE_TTL", "600"))  # default 10 minutes
+        cache_size = int(os.getenv("RERANK_CACHE_SIZE", "100"))  # default 100 entries
         _rerank_cache = TTLCache(maxsize=cache_size, ttl=cache_ttl)
     return _rerank_cache
 
 
 def _generate_cache_key(query: str, documents: List[Document], top_k: Optional[int]) -> str:
     """
-    Query ve dokuman iceriklerinden benzersiz cache key olusturur.
+    Generates a unique cache key from query and document contents.
     
-    Key formati: hash(query + sorted(doc_contents) + top_k)
+    Key format: hash(query + sorted(doc_contents) + top_k)
     """
-    # Dokuman iceriklerini sirala ve birlestir
-    doc_contents = sorted([doc.page_content[:200] for doc in documents])  # ilk 200 karakter yeterli
+    # Sort and merge document contents
+    doc_contents = sorted([doc.page_content[:200] for doc in documents])  # first 200 chars is sufficient
     content_str = query + "||" + "||".join(doc_contents) + f"||{top_k}"
     
-    # MD5 hash ile kisa key olustur
+    # Create a short key using MD5 hash
     return hashlib.md5(content_str.encode()).hexdigest()
 
 
 def get_cache_stats() -> dict:
-    """Cache istatistiklerini dondurur (debug icin)."""
+    """Returns cache statistics (for debugging)."""
     cache = _get_rerank_cache()
     if cache is None:
         return {"available": False}
@@ -77,14 +77,14 @@ def get_cache_stats() -> dict:
 
 
 # ============================================================
-# RERANKER MODEL SECENEKLERI
+# RERANKER MODEL OPTIONS
 # ============================================================
-# Yuksek accuracy (varsayilan) - ~400MB, daha yavas
+# High accuracy (default) - ~400MB, slower
 RERANKER_MODEL_DEFAULT = "BAAI/bge-reranker-base"
-# Hizli mod - ~80MB, biraz dusuk accuracy ama %40-60 daha hizli
+# Fast mode - ~80MB, slightly lower accuracy but 40-60% faster
 RERANKER_MODEL_FAST = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# Model bilgileri (referans icin)
+# Model information (for reference)
 RERANKER_MODELS = {
     "default": {
         "name": RERANKER_MODEL_DEFAULT,
@@ -103,34 +103,34 @@ RERANKER_MODELS = {
 
 def get_reranker_model_name(model_name: Optional[str] = None) -> str:
     """
-    Kullanilacak reranker model adini belirler.
+    Determines the reranker model name to use.
     
-    Oncelik sirasi:
-    1. Fonksiyona verilen model_name parametresi
-    2. RERANKER_MODEL env degiskeni
-    3. Varsayilan model (BAAI/bge-reranker-base)
+    Priority order:
+    1. model_name parameter passed to function
+    2. RERANKER_MODEL env variable
+    3. Default model (BAAI/bge-reranker-base)
     
-    Env var degerleri:
-    - "default" veya "BAAI/bge-reranker-base" -> yuksek accuracy
-    - "fast" veya "cross-encoder/ms-marco-MiniLM-L-6-v2" -> hizli mod
-    - Baska bir HuggingFace model adi -> o model kullanilir
+    Env var values:
+    - "default" or "BAAI/bge-reranker-base" -> high accuracy
+    - "fast" or "cross-encoder/ms-marco-MiniLM-L-6-v2" -> fast mode
+    - Any other HuggingFace model name -> that model is used
     
     Args:
-        model_name: Opsiyonel model adi (None ise env var veya varsayilan)
+        model_name: Optional model name (if None, uses env var or default)
         
     Returns:
-        str: Kullanilacak model adi
+        str: Model name to use
     """
-    # 1. Parametre kontrolu
+    # 1. Parameter check
     if model_name is not None:
-        # Alias kontrolu
+        # Alias check
         if model_name.lower() == "fast":
             return RERANKER_MODEL_FAST
         elif model_name.lower() == "default":
             return RERANKER_MODEL_DEFAULT
         return model_name
     
-    # 2. Env var kontrolu
+    # 2. Env var check
     env_model = os.getenv("RERANKER_MODEL")
     if env_model:
         env_model = env_model.strip()
@@ -140,7 +140,7 @@ def get_reranker_model_name(model_name: Optional[str] = None) -> str:
             return RERANKER_MODEL_DEFAULT
         return env_model
     
-    # 3. Varsayilan
+    # 3. Default
     return RERANKER_MODEL_DEFAULT
 
 
@@ -149,44 +149,44 @@ def create_reranker(
     device: str = "cuda"
 ):
     """
-    Cross-encoder reranker modelini oluşturur.
+    Creates the cross-encoder reranker model.
     
-    Model secimi (oncelik sirasi):
-    1. model_name parametresi
-    2. RERANKER_MODEL env degiskeni
-    3. Varsayilan: BAAI/bge-reranker-base
+    Model selection (priority order):
+    1. model_name parameter
+    2. RERANKER_MODEL env variable
+    3. Default: BAAI/bge-reranker-base
     
-    Desteklenen degerler:
-    - "default" veya "BAAI/bge-reranker-base" -> Yuksek accuracy (~400MB)
-    - "fast" veya "cross-encoder/ms-marco-MiniLM-L-6-v2" -> Hizli mod (~80MB)
-    - Herhangi bir HuggingFace model adi
+    Supported values:
+    - "default" or "BAAI/bge-reranker-base" -> High accuracy (~400MB)
+    - "fast" or "cross-encoder/ms-marco-MiniLM-L-6-v2" -> Fast mode (~80MB)
+    - Any HuggingFace model name
     
     Args:
-        model_name: HuggingFace model adı veya alias ("default", "fast")
-        device: Çalışacağı donanım (cuda/cpu)
+        model_name: HuggingFace model name or alias ("default", "fast")
+        device: Hardware to run on (cuda/cpu)
         
     Returns:
-        CrossEncoder: Reranker modeli
+        CrossEncoder: Reranker model
         
-    Ornekler:
-        >>> reranker = create_reranker()  # varsayilan (env var veya default)
-        >>> reranker = create_reranker("fast")  # hizli mod
-        >>> reranker = create_reranker("BAAI/bge-reranker-large")  # ozel model
+    Examples:
+        >>> reranker = create_reranker()  # default (env var or default)
+        >>> reranker = create_reranker("fast")  # fast mode
+        >>> reranker = create_reranker("BAAI/bge-reranker-large")  # custom model
     """
     if not CROSS_ENCODER_AVAILABLE:
-        raise ImportError("CrossEncoder mevcut değil. 'sentence-transformers' yükleyin.")
+        raise ImportError("CrossEncoder not available. Install 'sentence-transformers'.")
     
-    # Model adini belirle (env var destegi ile)
+    # Determine model name (with env var support)
     resolved_model = get_reranker_model_name(model_name)
     
-    # Model bilgisi goster
+    # Show model info
     if resolved_model == RERANKER_MODEL_FAST:
-        print(f"Reranker modeli yükleniyor: {resolved_model} (FAST mode - ~80MB)")
+        print(f"Loading reranker model: {resolved_model} (FAST mode - ~80MB)")
     else:
-        print(f"Reranker modeli yükleniyor: {resolved_model}")
+        print(f"Loading reranker model: {resolved_model}")
     
     reranker = CrossEncoder(resolved_model, device=device)
-    print("Reranker hazır.")
+    print("Reranker ready.")
     return reranker
 
 
@@ -199,29 +199,29 @@ def rerank_documents(
     use_cache: bool = True
 ) -> List[Document]:
     """
-    Dokümanları soruya göre yeniden sıralar (re-ranking).
+    Re-ranks documents based on the query (re-ranking).
     
-    Bu fonksiyon:
-    1. Cache'de varsa hemen dondurur (TTL cache)
-    2. Her dokümanı soruyla birlikte cross-encoder'a verir (batch halinde)
-    3. Skorlarına göre yeniden sıralar
-    4. Top-k kadar en iyi dokümanları döndürür
-    5. Sonucu cache'e kaydeder
+    This function:
+    1. Returns immediately if found in cache (TTL cache)
+    2. Feeds each document with the query to the cross-encoder (in batches)
+    3. Re-orders by scores
+    4. Returns the top-k best documents
+    5. Saves the result to cache
     
     Args:
-        query: Kullanıcı sorusu
-        documents: Yeniden sıralanacak dokümanlar listesi
-        reranker: CrossEncoder modeli
-        top_k: Döndürülecek en iyi doküman sayısı (None = hepsi)
-        batch_size: Cross-encoder batch boyutu (GPU memory optimizasyonu)
-        use_cache: Cache kullanimi (varsayilan: True)
+        query: User query
+        documents: List of documents to re-rank
+        reranker: CrossEncoder model
+        top_k: Number of best documents to return (None = all)
+        batch_size: Cross-encoder batch size (GPU memory optimization)
+        use_cache: Use cache (default: True)
         
     Returns:
-        List[Document]: Yeniden sıralanmış dokümanlar (yüksek skorlu önce)
+        List[Document]: Re-ranked documents (highest score first)
         
-    Örnek:
+    Example:
         >>> reranker = create_reranker()
-        >>> reranked = rerank_documents("Python nedir?", docs, reranker, top_k=5)
+        >>> reranked = rerank_documents("What is Python?", docs, reranker, top_k=5)
     """
     if not documents:
         return []
@@ -229,7 +229,7 @@ def rerank_documents(
     verbose = os.getenv("RERANK_VERBOSE", "false").lower() == "true"
     
     if not CROSS_ENCODER_AVAILABLE:
-        print("Uyarı: Reranker mevcut değil. Orijinal sıralama kullanılıyor.")
+        print("Warning: Reranker not available. Using original ordering.")
         return documents[:top_k] if top_k else documents
     
     # ============================================================
@@ -243,27 +243,27 @@ def rerank_documents(
         cached_result = cache.get(cache_key)
         if cached_result is not None:
             if verbose:
-                print(f"Reranking: Cache hit! ({len(cached_result)} doküman)")
+                print(f"Reranking: Cache hit! ({len(cached_result)} documents)")
             return cached_result
     
     # ============================================================
     # RERANKING (with batch_size optimization)
     # ============================================================
-    # Her doküman için (query, document) çifti oluştur
+    # Create (query, document) pairs for each document
     pairs = [[query, doc.page_content] for doc in documents]
     
-    # Cross-encoder ile skorları hesapla (batch_size ile)
+    # Calculate scores with cross-encoder (using batch_size)
     try:
         scores = reranker.predict(pairs, batch_size=batch_size)
     except Exception as e:
-        print(f"Reranking hatası: {e}. Orijinal sıralama kullanılıyor.")
+        print(f"Reranking error: {e}. Using original ordering.")
         return documents[:top_k] if top_k else documents
     
-    # Dokümanları skorlarına göre sırala (yüksek skorlu önce)
+    # Sort documents by scores (highest score first)
     scored_docs = list(zip(scores, documents))
     scored_docs.sort(key=lambda x: x[0], reverse=True)
     
-    # Top-k kadar al ve skorlari metadata'ya yaz
+    # Take top-k and write scores to metadata
     reranked_docs = []
     for score, doc in scored_docs[:top_k] if top_k else scored_docs:
         doc.metadata["rerank_score"] = float(score)
@@ -272,8 +272,8 @@ def rerank_documents(
     max_score = float(max(scores)) if len(scores) > 0 else 0.0
     if verbose:
         print(
-            f"Reranking: {len(documents)} doküman {len(reranked_docs)}'e indirildi "
-            f"(en iyi skor: {max_score:.3f})"
+            f"Reranking: {len(documents)} documents reduced to {len(reranked_docs)} "
+            f"(best score: {max_score:.3f})"
         )
     
     # ============================================================
@@ -295,26 +295,26 @@ def create_rerank_retriever(
     use_cache: bool = True
 ):
     """
-    Base retriever'ı reranker ile sarmalar.
+    Wraps the base retriever with a reranker.
     
-    Bu fonksiyon:
-    1. Base retriever ile daha fazla doküman bulur (rerank_top_n)
-    2. Reranker ile yeniden sıralar (cache ve batch_size ile optimize)
-    3. Top-k kadar en iyisini döndürür
+    This function:
+    1. Finds more documents with the base retriever (rerank_top_n)
+    2. Re-ranks with the reranker (optimized with cache and batch_size)
+    3. Returns the top-k best results
     
     Args:
-        base_retriever: Temel retriever (vectorstore retriever)
-        query: Kullanıcı sorusu
-        reranker: CrossEncoder modeli
-        top_k: Döndürülecek en iyi doküman sayısı
-        rerank_top_n: Reranking için alınacak doküman sayısı (top_k'dan fazla olmalı)
-        batch_size: Cross-encoder batch boyutu (GPU memory optimizasyonu)
-        use_cache: Cache kullanimi (varsayilan: True)
+        base_retriever: Base retriever (vectorstore retriever)
+        query: User query
+        reranker: CrossEncoder model
+        top_k: Number of best documents to return
+        rerank_top_n: Number of documents to fetch for reranking (should be more than top_k)
+        batch_size: Cross-encoder batch size (GPU memory optimization)
+        use_cache: Use cache (default: True)
         
     Returns:
-        List[Document]: Rerank edilmiş dokümanlar
+        List[Document]: Re-ranked documents
     """
-    # 1. Base retriever ile daha fazla doküman al (rerank için)
+    # 1. Get more documents with base retriever (for reranking)
     if hasattr(base_retriever, "invoke"):
         docs = base_retriever.invoke(query)
     elif hasattr(base_retriever, "get_relevant_documents"):
@@ -324,14 +324,14 @@ def create_rerank_retriever(
     else:
         docs = []
     
-    # Rerank için yeterli doküman yoksa, direkt döndür
+    # Not enough documents for reranking — return directly
     if len(docs) <= 1:
         return docs[:top_k] if top_k else docs
     
-    # 2. Rerank et (cache ve batch_size ile)
+    # 2. Rerank (with cache and batch_size)
     reranked = rerank_documents(
         query=query,
-        documents=docs[:rerank_top_n],  # İlk rerank_top_n kadarını rerank et
+        documents=docs[:rerank_top_n],  # Rerank only the first rerank_top_n
         reranker=reranker,
         top_k=top_k,
         batch_size=batch_size,

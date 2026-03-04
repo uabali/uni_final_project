@@ -1,16 +1,16 @@
 """
-Retriever Modülü (Gelişmiş Arama)
+Retriever Module (Advanced Search)
 
-Bu modül, kullanıcının sorusuna (Query) en uygun doküman parçalarını bulmaktan sorumludur.
-Akıllı stratejiler kullanarak arama kalitesini artırır.
+This module is responsible for finding the most relevant document chunks
+for the user's query. It improves search quality using smart strategies.
 
-Özellikler:
-- Auto Strategy: Soru tipine göre (nasıl, kaç, nedir) otomatik strateji seçimi.
-- Hybrid Search: Vektör + Kelime Bazlı (BM25) arama.
-- Dynamic K: Soru karmaşıklığına göre getirilecek parça sayısını ayarlar.
-- Multi-query: Bir soruyu birden fazla şekilde ifade ederek arama yapar (daha iyi retrieval).
-- Re-ranking: Cross-encoder ile sonuçları yeniden sıralar (%15-25 daha iyi accuracy).
-- Adaptive Reranking: Basit sorgular için reranking'i atlayarak latency azaltır.
+Features:
+- Auto Strategy: Automatic strategy selection based on question type (how, how many, what is).
+- Hybrid Search: Vector + Keyword-based (BM25) search.
+- Dynamic K: Adjusts the number of chunks to retrieve based on question complexity.
+- Multi-query: Searches by rephrasing a question in multiple ways (better retrieval).
+- Re-ranking: Re-ranks results using a cross-encoder (15-25% better accuracy).
+- Adaptive Reranking: Skips reranking for simple queries to reduce latency.
 """
 
 import os
@@ -23,9 +23,9 @@ from langchain_core.documents import Document
 
 def run_retriever(retriever, query: str) -> List[Document]:
     """
-    Farkli retriever arabirimlerini tek yerden calistirir.
+    Runs different retriever interfaces from a single place.
 
-    Destek sirası:
+    Support order:
     1) invoke(query)
     2) get_relevant_documents(query)
     3) callable(query)
@@ -60,18 +60,18 @@ def get_rerank_decision(question: str, use_rerank: bool, reranker, fast_mode: bo
 
 
 # ============================================================
-# 1️⃣ BM25 BUILDER (UYGULAMA BAŞLANGICINDA 1 KEZ ÇAĞRILIR)
+# 1. BM25 BUILDER (CALLED ONCE AT APPLICATION STARTUP)
 # ============================================================
 def build_bm25_retriever(docs, k=6):
     """
-    BM25 (Kelime bazlı arama) indeksini oluşturur.
-    Bunu her sorguda DEĞİL, uygulama başında 1 kez yapmak performans için kritiktir.
+    Builds the BM25 (keyword-based search) index.
+    Doing this once at startup (not per query) is critical for performance.
     
     Args:
-        docs (list): Tüm doküman parçaları.
+        docs (list): All document chunks.
         
     Returns:
-        BM25Retriever: Hazır BM25 arama motoru.
+        BM25Retriever: Ready BM25 search engine.
     """
     bm25 = BM25Retriever.from_documents(docs)
     bm25.k = k
@@ -79,12 +79,12 @@ def build_bm25_retriever(docs, k=6):
 
 
 # ============================================================
-# 2️⃣ DYNAMIC K (SORU KARMAŞIKLIĞINA GÖRE PARÇA SAYISI)
+# 2. DYNAMIC K (CHUNK COUNT BASED ON QUESTION COMPLEXITY)
 # ============================================================
 def calculate_dynamic_k(question: str, base_k: int = 8, max_k: int = 15) -> int:
     q = question.lower()
     indicators = ["ve", "neden", "nasil", "hangi", "ne zaman", "kim", "arasindaki fark",
-                   "karsilastir", "and", "how", "why", "which"]
+                   "karsilastir", "and", "how", "why", "which", "compare", "difference"]
     score = sum(1 for x in indicators if x in q)
 
     if score >= 2:
@@ -95,40 +95,40 @@ def calculate_dynamic_k(question: str, base_k: int = 8, max_k: int = 15) -> int:
 
 
 # ============================================================
-# 3️⃣ AUTO STRATEGY SELECTION (OTOMATİK STRATEJİ SEÇİMİ)
+# 3. AUTO STRATEGY SELECTION
 # ============================================================
 def auto_select_strategy(question: str) -> str:
     """
-    Sorunun türüne göre en iyi arama stratejisini seçer.
+    Selects the best search strategy based on the question type.
     
-    Kurallar:
-    - Sayısal/Kesin bilgi ("kaç", "süre", "dakika") -> Hybrid (BM25 + Vektör)
-    - Açıklayıcı ("neden", "nasıl") -> MMR (Çeşitlilik odaklı)
-    - Diğerleri -> Similarity (Hızlı, benzerlik odaklı)
+    Rules:
+    - Numeric/exact info ("how many", "duration", "minutes") -> Hybrid (BM25 + Vector)
+    - Explanatory ("why", "how") -> MMR (Diversity-focused)
+    - Others -> Similarity (Fast, similarity-focused)
     """
     q = question.lower()
 
-    # Sayısal / kesin sorular
-    if any(x in q for x in ["kac", "sure", "ne zaman", "dakika"]):
-        return "hybrid"     # Sayısal / Kesin bilgi
+    # Numeric / exact queries
+    if any(x in q for x in ["kac", "sure", "ne zaman", "dakika", "how many", "how long", "when", "duration"]):
+        return "hybrid"     # Numeric / Exact info
 
-    # Açıklayıcı sorular
-    if any(x in q for x in ["neden", "nasil"]):
-        return "mmr"        # Açıklayıcı / Çeşitlilik
+    # Explanatory queries
+    if any(x in q for x in ["neden", "nasil", "why", "how"]):
+        return "mmr"        # Explanatory / Diversity
 
-    # Kullanim alanlari / nerelerde kullanilir gibi genis kapsamli sorular icin
-    # zayif eslesmeleri elemek uzere threshold kullan
-    if any(x in q for x in ["kullanim alanlari", "hangi projelerde", "nerelerde kullanilir", "nerede kullanilir"]):
-        return "threshold"  # Skor esigine gore filtreleme
+    # Use cases / broad scope queries — use threshold to filter weak matches
+    if any(x in q for x in ["kullanim alanlari", "hangi projelerde", "nerelerde kullanilir",
+                              "nerede kullanilir", "use cases", "applications", "where is it used"]):
+        return "threshold"  # Score threshold filtering
 
-    return "similarity"     # Hızlı varsayılan
+    return "similarity"     # Fast default
 
 
 # ============================================================
-# 3️⃣ HYBRID MERGE (RRF - WEIGHTED)
+# 3. HYBRID MERGE (RRF - WEIGHTED)
 # ============================================================
 def _doc_key(doc: Document) -> Tuple[str, str]:
-    """Dokumanlari benzersizlestirmek icin anahtar."""
+    """Key for deduplicating documents."""
     source = str(doc.metadata.get("source", ""))
     content = doc.page_content[:200]
     return (source, content)
@@ -142,8 +142,8 @@ def _rrf_merge(
     rrf_k: int = 60
 ) -> List[Document]:
     """
-    RRF (Reciprocal Rank Fusion) ile iki listeyi birlestirir.
-    Her liste icin skor: weight * (1 / (rrf_k + rank))
+    Merges two lists using RRF (Reciprocal Rank Fusion).
+    Score for each list: weight * (1 / (rrf_k + rank))
     """
     scores: Dict[Tuple[str, str], float] = {}
     doc_map: Dict[Tuple[str, str], Document] = {}
@@ -160,7 +160,7 @@ def _rrf_merge(
         doc_map[key] = doc
         scores[key] = scores.get(key, 0.0) + (bm25_weight / (rrf_k + rank))
 
-    # Skorlara gore sirala
+    # Sort by scores
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     merged_docs = [doc_map[key] for key, _ in ranked]
     return merged_docs[:top_k]
@@ -168,8 +168,8 @@ def _rrf_merge(
 
 class HybridRetriever:
     """
-    Vektor ve BM25 retriever'larini RRF ile birlestiren custom retriever.
-    LangChain 1.x ile uyumlu (EnsembleRetriever yerine).
+    Custom retriever that merges vector and BM25 retrievers using RRF.
+    Compatible with LangChain 1.x (replaces EnsembleRetriever).
     """
 
     def __init__(self, vector_retriever, bm25_retriever, bm25_weight: float = 0.3, top_k: int = 6):
@@ -191,7 +191,7 @@ class HybridRetriever:
 
 
 # ============================================================
-# 4️⃣ HYBRID RETRIEVER (VEKTÖR + BM25 BİRLEŞİMİ)
+# 4. HYBRID RETRIEVER (VECTOR + BM25 COMBINATION)
 # ============================================================
 def create_hybrid_retriever(
     vectorstore,
@@ -217,7 +217,7 @@ def create_hybrid_retriever(
 
 
 # ============================================================
-# 5️⃣ MAIN: CREATE RETRIEVER (ANA FONKSİYON)
+# 5. MAIN: CREATE RETRIEVER (MAIN FUNCTION)
 # ============================================================
 def create_retriever(
     vectorstore,
@@ -239,29 +239,29 @@ def create_retriever(
     fast_mode=False,
 ):
     """
-    Tüm ayarları yaparak nihai Retriever objesini oluşturur.
-    Her kullanıcı sorgusunda çağrılır ve dinamik olarak yapılandırılır.
+    Configures and returns the final Retriever object with all settings applied.
+    Called for each user query and dynamically configured.
     
     Args:
-        vectorstore: Qdrant veritabanı.
-        question (str): Kullanıcı sorusu.
+        vectorstore: Qdrant database.
+        question (str): User query.
         strategy (str): "auto", "mmr", "similarity", "hybrid".
-        base_k (int): Getirilecek temel chunk sayısı.
-        use_multi_query (bool): Multi-query tekniğini kullan (varsayılan: False).
-        llm: LLM modeli (multi-query için gerekli).
-        num_queries (int): Multi-query için alternatif soru sayısı (varsayılan: 3).
-        use_rerank (bool): Re-ranking kullan (varsayılan: False).
-        reranker: CrossEncoder modeli (rerank için gerekli).
-        rerank_top_n (int): Reranking için alınacak doküman sayısı (varsayılan: 20).
-        fast_mode (bool): Hizli mod - basit sorgularda reranking atlanir (varsayilan: False).
+        base_k (int): Base number of chunks to retrieve.
+        use_multi_query (bool): Use multi-query technique (default: False).
+        llm: LLM model (required for multi-query).
+        num_queries (int): Number of alternative queries for multi-query (default: 3).
+        use_rerank (bool): Use re-ranking (default: False).
+        reranker: CrossEncoder model (required for rerank).
+        rerank_top_n (int): Number of documents to fetch for reranking (default: 20).
+        fast_mode (bool): Fast mode — skip reranking for simple queries (default: False).
         
     Returns:
-        Retriever veya Callable: LangChain tarafından kullanılabilir arama motoru.
+        Retriever or Callable: Search engine usable by LangChain.
     """
-    # Adaptive reranking karari
+    # Adaptive reranking decision
     should_rerank = get_rerank_decision(question, use_rerank, reranker, fast_mode)
     
-    # Multi-query kullanılıyorsa
+    # If multi-query is being used
     if use_multi_query and llm:
         from src.query_translation import create_multi_query_retriever
         base_retriever = create_multi_query_retriever(
@@ -279,7 +279,7 @@ def create_retriever(
             bm25_weight=bm25_weight
         )
         
-        # Multi-query + Rerank kombinasyonu (adaptive skip ile)
+        # Multi-query + Rerank combination (with adaptive skip)
         if should_rerank:
             from src.reranker import create_rerank_retriever
             return lambda q: create_rerank_retriever(
@@ -292,16 +292,16 @@ def create_retriever(
         
         return base_retriever
     
-    # 1. Dinamik K Hesapla
+    # 1. Calculate Dynamic K
     k = calculate_dynamic_k(question, base_k)
 
-    # 2. Strateji Belirle
+    # 2. Determine Strategy
     if strategy == "auto":
         strategy = auto_select_strategy(question)
 
-    # Rerank kullanılıyorsa, daha fazla doküman al (rerank için)
+    # If rerank is used, fetch more documents (for reranking)
     if should_rerank:
-        search_k = max(rerank_top_n, k * 2)  # Rerank için daha fazla al
+        search_k = max(rerank_top_n, k * 2)  # Fetch more for rerank
     else:
         search_k = k
 
@@ -309,15 +309,15 @@ def create_retriever(
     if metadata_filter:
         search_kwargs["filter"] = metadata_filter
 
-    # --- STRATEJİ UYGULAMA ---
+    # --- STRATEGY APPLICATION ---
 
-    # SIMILARITY (En hızlı, basit benzerlik)
+    # SIMILARITY (Fastest, simple similarity)
     if strategy == "similarity":
         base_retriever = vectorstore.as_retriever(
             search_type="similarity",
             search_kwargs=search_kwargs
         )
-    # MMR (Max Marginal Relevance - Çeşitlilik)
+    # MMR (Max Marginal Relevance - Diversity)
     elif strategy == "mmr":
         search_kwargs.update({
             "fetch_k": fetch_k,
@@ -327,14 +327,14 @@ def create_retriever(
             search_type="mmr",
             search_kwargs=search_kwargs
         )
-    # THRESHOLD (Skor Eşiği - Gürültü Filtreleme)
+    # THRESHOLD (Score Threshold - Noise Filtering)
     elif strategy == "threshold":
         search_kwargs["score_threshold"] = score_threshold
         base_retriever = vectorstore.as_retriever(
             search_type="similarity_score_threshold",
             search_kwargs=search_kwargs
         )
-    # HYBRID (Vektör + BM25)
+    # HYBRID (Vector + BM25)
     elif strategy == "hybrid" and bm25_retriever:
         base_retriever = create_hybrid_retriever(
             vectorstore,
@@ -344,14 +344,14 @@ def create_retriever(
             lambda_mult,
             bm25_weight
         )
-    # FALLBACK (Varsayılan olarak MMR kullanılır)
+    # FALLBACK (Default: MMR)
     else:
         base_retriever = vectorstore.as_retriever(
             search_type="mmr",
             search_kwargs={"k": search_k, "fetch_k": fetch_k, "lambda_mult": lambda_mult}
         )
     
-    # Rerank kullanılıyorsa, base retriever'ı rerank ile sarmala (adaptive skip ile)
+    # If rerank is used, wrap base retriever with rerank (with adaptive skip)
     if should_rerank:
         from src.reranker import create_rerank_retriever
         
@@ -360,7 +360,7 @@ def create_retriever(
                 base_retriever=base_retriever,
                 query=query,
                 reranker=reranker,
-                top_k=k,  # Final k değeri
+                top_k=k,  # Final k value
                 rerank_top_n=rerank_top_n
             )
         

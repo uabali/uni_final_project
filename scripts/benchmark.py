@@ -126,9 +126,9 @@ def _run_retriever(retriever, query: str):
 
 def _get_llm(_backend: str):
     """
-    Tek backend: Meta-Llama-3.1-8B-Instruct-AWQ-INT4 (vLLM local).
+    Single backend: Meta-Llama-3.1-8B-Instruct-AWQ-INT4 (vLLM local).
 
-    backend parametresi sadece CLI uyumluluğu için korunur.
+    The backend parameter is retained only for CLI compatibility.
     """
     app = build_rag_app(RagAppConfig())
     return app.llm
@@ -362,9 +362,9 @@ def run_benchmark(args):
     if not dataset:
         raise ValueError("Dataset is empty.")
     if args.mode == "agent" and args.stream:
-        raise ValueError("Streaming TTFT olcumu su anda sadece pipeline modunda destekleniyor.")
+        raise ValueError("Streaming TTFT measurement is currently only supported in pipeline mode.")
     if args.concurrency < 1:
-        raise ValueError("--concurrency en az 1 olmalidir.")
+        raise ValueError("--concurrency must be at least 1.")
 
     backend = args.backend or "local-llama3.1-awq"
     pipeline = build_pipeline(
@@ -546,7 +546,7 @@ def parse_args():
     parser.add_argument(
         "--backend",
         default=None,
-        help="Artık yalnızca local-llama3.1-awq backend kullanılır (parametre görmezden gelinir).",
+        help="Only local-llama3.1-awq backend is used now (parameter is ignored).",
     )
     parser.add_argument("--split-method", choices=["recursive", "semantic"], default="recursive")
     parser.add_argument("--use-multi-query", action="store_true")

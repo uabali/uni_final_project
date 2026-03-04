@@ -1,19 +1,19 @@
 """
-FastAPI API Gateway — Gerçek HTTP sunucusu.
+FastAPI API Gateway — HTTP server.
 
-Endpoint'ler:
-  POST /chat          → SSE streaming ile agentic RAG cevabı
-  POST /chat/sync     → Streaming olmadan senkron cevap
-  POST /ingest        → Yeni doküman yükleme (incremental)
-  PUT  /config/llm    → Runtime LLM provider değişikliği
-  GET  /health        → Sistem sağlık kontrolü
-  GET  /config/llm    → Mevcut LLM provider bilgisi
+Endpoints:
+  POST /chat          → SSE streaming agentic RAG response
+  POST /chat/sync     → Non-streaming synchronous response
+  POST /ingest        → New document ingestion (incremental)
+  PUT  /config/llm    → Runtime LLM provider change
+  GET  /health        → System health check
+  GET  /config/llm    → Current LLM provider info
 """
 
 from __future__ import annotations
 
 import os
-# CUDA debug flags — sadece geliştirme için; production'da kapatın (gecikme artırır)
+# CUDA debug flags — for development only; disable in production (increases latency)
 if os.getenv("CUDA_DEBUG", "").lower() in ("1", "true"):
     os.environ["TORCH_USE_CUDA_DSA"] = "1"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -57,13 +57,13 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 def _require_api_key(request: Request) -> None:
-    """API_KEY env set ise X-API-Key header zorunlu."""
+    """Requires X-API-Key header if API_KEY env is set."""
     api_key = os.getenv("API_KEY", "").strip()
     if not api_key:
         return
     provided = request.headers.get("X-API-Key", "")
     if provided != api_key:
-        raise HTTPException(status_code=401, detail="Geçersiz veya eksik API anahtarı")
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 _JWT_SECRET = os.getenv("JWT_SECRET_KEY", "").strip()
@@ -83,14 +83,14 @@ def _decode_jwt_token(token: str) -> dict:
     if not _JWT_SECRET:
         raise HTTPException(
             status_code=500,
-            detail="JWT doğrulama etkin ancak JWT_SECRET_KEY tanımlı değil",
+            detail="JWT verification enabled but JWT_SECRET_KEY is not defined",
         )
     try:
         payload = jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
     except PyJWTError as exc:
-        raise HTTPException(status_code=401, detail=f"Geçersiz JWT token: {exc}") from exc
+        raise HTTPException(status_code=401, detail=f"Invalid JWT token: {exc}") from exc
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=401, detail="JWT payload formatı beklenenden farklı")
+        raise HTTPException(status_code=401, detail="JWT payload format is unexpected")
     return payload
 
 
@@ -99,20 +99,20 @@ async def get_request_context(
     x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
 ) -> AppRequestContext:
     """
-    Ortak security katmanı:
-    - Opsiyonel API key kontrolü (_require_api_key)
-    - JWT doğrulama (Authorization: Bearer)
-    - RequestContext oluşturma ve global contextvar'a yazma
+    Shared security layer:
+    - Optional API key check (_require_api_key)
+    - JWT verification (Authorization: Bearer)
+    - RequestContext creation and writing to global contextvar
     """
     _require_api_key(request)
 
     token = _extract_bearer_token(request)
 
-    # Geliştirme / local senaryolar için:
-    # JWT_SECRET_KEY tanımlı değilse JWT zorunlu değildir.
+    # For development / local scenarios:
+    # JWT is not required if JWT_SECRET_KEY is not defined.
     claims: Dict[str, Any]
     if not _JWT_SECRET:
-        # Local / dev mod: departman bilgisini header'dan okumaya çalış
+        # Local / dev mode: try to read department info from header
         claims = {}
         user_id = "anonymous"
         header_dept = request.headers.get("X-Department-ID")
@@ -120,14 +120,14 @@ async def get_request_context(
         role = "user"
     else:
         if not token:
-            raise HTTPException(status_code=401, detail="Authorization Bearer token eksik")
+            raise HTTPException(status_code=401, detail="Authorization Bearer token missing")
         claims = _decode_jwt_token(token)
         user_id = str(claims.get("user_id") or claims.get("sub") or "unknown")
         department_id = str(claims.get("department_id") or claims.get("dept") or "").strip()
         role = str(claims.get("role") or "user")
         if not department_id:
-            # Departman bilgisi zorunlu, aksi takdirde çoklu-tenant izolasyonu bozulur.
-            raise HTTPException(status_code=403, detail="JWT içinde department_id claim'i eksik")
+            # Department info is required; otherwise multi-tenant isolation breaks.
+            raise HTTPException(status_code=403, detail="department_id claim missing in JWT")
 
     request_id, session_id = generate_request_ids(
         user_id=user_id,
@@ -148,7 +148,7 @@ async def get_request_context(
     )
     set_request_context(ctx)
 
-    # Basit istek log'u (fail durumunda ana akışı bozmadan)
+    # Simple request log (does not disrupt main flow on failure)
     audit = get_audit_logger()
     if audit.is_available:
         audit.log_request(
@@ -160,51 +160,18 @@ async def get_request_context(
     return ctx
 
 
-# ── WebSocket Hub (Task Status Streaming) ─────────────────────
-
-
-@app.websocket("/ws/tasks/{task_id}")
-async def task_status_websocket(websocket: WebSocket, task_id: str):
-    """
-    Uzun süren agent görevleri için WebSocket kanalı.
-
-    Şu an için:
-    - task_id genellikle session_id ile aynıdır (X-Session-ID).
-    - Sunucu tarafındaki Task registry'de bir değişiklik oldukça client'a
-      JSON payload olarak gönderilir.
-    """
-    await websocket.accept()
-    last_version: int | None = None
-    try:
-        while True:
-            snapshot = get_task_snapshot(task_id)
-            if snapshot is not None:
-                version = int(snapshot.get("version", 0))
-                if last_version is None or version != last_version:
-                    await websocket.send_text(json.dumps(snapshot, ensure_ascii=False))
-                    last_version = version
-            await asyncio.sleep(1.0)
-    except WebSocketDisconnect:
-        return
-    except Exception as exc:
-        logger.error(f"Task WebSocket hatası ({task_id}): {exc}")
-        try:
-            await websocket.close()
-        except Exception:
-            pass
-
 # ── Pydantic Models ───────────────────────────────────────────
 
 
 class ChatRequest(BaseModel):
-    """Chat isteği."""
-    message: str = Field(..., min_length=1, max_length=8192, description="Kullanıcı mesajı")
-    llm_provider: Optional[str] = Field(None, description="Kullanılacak LLM provider (opsiyonel)")
-    use_rag: bool = Field(True, description="RAG modunu etkinleştir/devre dışı bırak")
+    """Chat request."""
+    message: str = Field(..., min_length=1, max_length=8192, description="User message")
+    llm_provider: Optional[str] = Field(None, description="LLM provider to use (optional)")
+    use_rag: bool = Field(True, description="Enable/disable RAG mode")
 
 
 class ChatResponse(BaseModel):
-    """Senkron chat cevabı."""
+    """Synchronous chat response."""
     session_id: str
     answer: str
     latency_ms: float
@@ -213,12 +180,12 @@ class ChatResponse(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    """Doküman yükleme isteği (path listesi)."""
-    paths: List[str] = Field(..., min_length=1, description="Yüklenecek dosya yolları")
+    """Document ingestion request (path list)."""
+    paths: List[str] = Field(..., min_length=1, description="File paths to ingest")
 
 
 class IngestResponse(BaseModel):
-    """Doküman yükleme cevabı."""
+    """Document ingestion response."""
     status: str
     ingested: int
     skipped: int
@@ -226,34 +193,34 @@ class IngestResponse(BaseModel):
 
 
 class DeleteRequest(BaseModel):
-    """Doküman silme isteği."""
-    paths: List[str] = Field(..., min_length=1, description="Silinecek dosya yolları veya dosya adları")
+    """Document deletion request."""
+    paths: List[str] = Field(..., min_length=1, description="File paths or names to delete")
 
 
 class DeleteResponse(BaseModel):
-    """Doküman silme cevabı."""
+    """Document deletion response."""
     status: str
     deleted: int
     errors: List[str] = Field(default_factory=list)
 
 
 class LlmConfigRequest(BaseModel):
-    """LLM provider değişikliği isteği."""
-    provider: str = Field(..., description="Provider adı: vllm | openai | litellm")
+    """LLM provider change request."""
+    provider: str = Field(..., description="Provider name: vllm | openai | litellm")
     api_key: Optional[str] = Field(None, description="External provider API key")
-    model: Optional[str] = Field(None, description="Kullanılacak model adı")
+    model: Optional[str] = Field(None, description="Model name to use")
     base_url: Optional[str] = Field(None, description="Custom endpoint URL")
 
 
 class LlmConfigResponse(BaseModel):
-    """LLM config cevabı."""
+    """LLM config response."""
     status: str
     provider: str
     model: str
 
 
 class HealthResponse(BaseModel):
-    """Sağlık kontrolü cevabı."""
+    """Health check response."""
     status: str
     vectorstore: bool
     memory: bool
@@ -269,10 +236,10 @@ _start_time: float = 0.0
 
 
 def _get_rag_app():
-    """Singleton RagApp instance'ını döner."""
+    """Returns the singleton RagApp instance."""
     app = _app_state.get("rag_app")
     if app is None:
-        raise HTTPException(status_code=503, detail="RAG uygulaması henüz başlatılmadı")
+        raise HTTPException(status_code=503, detail="RAG application has not been initialized yet")
     return app
 
 
@@ -281,14 +248,14 @@ def _get_rag_app():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Uygulama başlangıcında heavy objeleri yükler.
-    Kapanışta temizlik yapar.
+    Loads heavy objects at application startup.
+    Performs cleanup on shutdown.
     """
     global _start_time
     from dotenv import load_dotenv
     load_dotenv()
 
-    logger.info("RAG uygulaması başlatılıyor...")
+    logger.info("RAG application starting...")
     _start_time = time.time()
 
     try:
@@ -296,14 +263,14 @@ async def lifespan(app: FastAPI):
         cfg = RagAppConfig()
         rag_app = build_rag_app(cfg)
         _app_state["rag_app"] = rag_app
-        logger.info("RAG uygulaması hazır!")
+        logger.info("RAG application ready!")
     except Exception as exc:
-        logger.error(f"RAG başlatma hatası: {exc}")
+        logger.error(f"RAG initialization error: {exc}")
         _app_state["rag_app"] = None
 
     yield
 
-    logger.info("RAG uygulaması kapatılıyor...")
+    logger.info("RAG application shutting down...")
     _app_state.clear()
 
 
@@ -311,7 +278,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Agentic RAG API",
-    description="LangGraph ReAct Agent tabanlı RAG sistemi API'si",
+    description="LangGraph ReAct Agent-based RAG system API",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -332,18 +299,52 @@ from api.metrics import router as metrics_router  # noqa: E402
 app.include_router(metrics_router)
 
 
+# ── WebSocket Hub (Task Status Streaming) ─────────────────────
+
+
+@app.websocket("/ws/tasks/{task_id}")
+async def task_status_websocket(websocket: WebSocket, task_id: str):
+    """
+    WebSocket channel for long-running agent tasks.
+
+    Currently:
+    - task_id is usually the same as session_id (X-Session-ID).
+    - When a change occurs in the server-side Task registry, a JSON payload
+      is sent to the client.
+    """
+    await websocket.accept()
+    last_version: int | None = None
+    try:
+        while True:
+            snapshot = get_task_snapshot(task_id)
+            if snapshot is not None:
+                version = int(snapshot.get("version", 0))
+                if last_version is None or version != last_version:
+                    await websocket.send_text(json.dumps(snapshot, ensure_ascii=False))
+                    last_version = version
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        logger.error(f"Task WebSocket error ({task_id}): {exc}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 # ── Helper Functions ──────────────────────────────────────────
 
 def _extract_sources(result: dict) -> List[Dict[str, Any]]:
-    """Agent sonucundan kaynak bilgilerini çıkarır, tekilleştirir ve chunk snippet'lerini ekler."""
+    """Extracts source information from agent result, deduplicates, and adds chunk snippets."""
     import re
     from langchain_core.messages import ToolMessage
 
     sources: List[Dict[str, Any]] = []
     seen = set()
 
-    # Mesajlar üzerinde tek geçiş: her ToolMessage için hem chunk snippet'lerini
-    # hem de kaynak metadata'sını aynı anda çıkar.
+    # Single pass over messages: extract both chunk snippets and source metadata
+    # from each ToolMessage simultaneously.
     for msg in result.get("messages", []):
         if not (isinstance(msg, ToolMessage) and isinstance(msg.content, str)):
             continue
@@ -357,7 +358,7 @@ def _extract_sources(result: dict) -> List[Dict[str, Any]]:
         for raw_line in content.splitlines():
             line = raw_line.strip()
 
-            # Web kaynak satırları (ToolMessage içindeki "Source: http...")
+            # Web source lines (\"Source: http...\" inside ToolMessage)
             if line.startswith("Source: http"):
                 url = line.replace("Source: ", "").strip()
                 if url and url not in seen:
@@ -365,9 +366,9 @@ def _extract_sources(result: dict) -> List[Dict[str, Any]]:
                     sources.append({"type": "web", "url": url, "title": url})
                 continue
 
-            # CHUNK başlıkları ve opsiyonel source= metadata'sı
+            # CHUNK headers and optional source= metadata
             if line.startswith("[CHUNK "):
-                # Önceki chunk'ın snippet'ini kaydet
+                # Save previous chunk's snippet
                 if current_chunk_id is not None and current_lines:
                     snippet_text = "\n".join(current_lines).strip()
                     if snippet_text:
@@ -381,7 +382,7 @@ def _extract_sources(result: dict) -> List[Dict[str, Any]]:
                     cid = int(id_match.group(1))
                     current_chunk_id = cid
 
-                    # Regex: boşluklu dosya adlarını da yakalar (örn: "Python Kitap.pdf")
+                    # Regex: also catches file names with spaces (e.g. "Python Book.pdf")
                     meta_match = re.match(r"\[CHUNK\s+(\d+)\]\s+source=(.+?)\s+(p\.\S+)", line)
                     if meta_match:
                         source_name = meta_match.group(2).strip()
@@ -389,17 +390,17 @@ def _extract_sources(result: dict) -> List[Dict[str, Any]]:
                         chunk_meta[cid] = {"source": source_name, "page": page}
                 continue
 
-            # CHUNK içeriği (snippet): boş olmayan, yeni CHUNK/metadata olmayan satırlar
+            # CHUNK content (snippet): non-empty lines that are not new CHUNK/metadata
             if current_chunk_id is not None and line and not line.startswith("["):
                 current_lines.append(line)
 
-        # Son chunk'ı da kaydet
+        # Save the last chunk as well
         if current_chunk_id is not None and current_lines:
             snippet_text = "\n".join(current_lines).strip()
             if snippet_text:
                 chunk_snippets[current_chunk_id] = snippet_text
 
-        # Bu ToolMessage içindeki doküman kaynaklarını tekilleştirerek ekle
+        # Add document sources from this ToolMessage with deduplication
         for chunk_id, meta in chunk_meta.items():
             source_name = meta["source"]
             page = meta["page"]
@@ -424,11 +425,11 @@ def _extract_sources(result: dict) -> List[Dict[str, Any]]:
 
 
 async def _run_agent_sync(rag_app, message: str, session_id: str, provider_name: str | None = None) -> dict:
-    """Agent'ı senkron olarak çalıştırır (thread pool'da)."""
+    """Runs the agent synchronously (in thread pool)."""
 
-    from src.context import get_request_context
+    from src.context import get_request_context as _get_ctx
 
-    ctx = get_request_context()
+    ctx = _get_ctx()
 
     def _invoke():
         configurable = {"session_id": session_id}
@@ -468,15 +469,16 @@ async def _run_agent_sync(rag_app, message: str, session_id: str, provider_name:
 
 
 async def _run_plain_llm(rag_app, message: str) -> str:
-    """RAG olmadan doğrudan LLM'i çalıştırır (normal chatbot modu)."""
+    """Runs the LLM directly without RAG (normal chatbot mode)."""
     from langchain_core.messages import SystemMessage
 
     def _invoke():
         system_msg = SystemMessage(content=(
-            "Sen yardımcı bir asistansın. Kullanıcının sorularını doğal ve akıcı bir şekilde Türkçe olarak yanıtla. "
-            "İnternet erişimin yok, bu yüzden hava durumu, güncel haberler, döviz kurları gibi "
-            "anlık bilgilere erişemezsin. Bu tür sorularda dürüstçe 'bu bilgiye erişimim yok' de. "
-            "Eğer bir konuda kesin emin değilsen, tahmini bilgi vermek yerine emin olmadığını belirt."
+            "You are a helpful assistant. Answer the user's questions naturally and fluently "
+            "in the same language as the query. "
+            "You have no internet access, so you cannot access real-time information like weather, "
+            "current news, or exchange rates. For such questions, honestly say 'I don't have access to this information.' "
+            "If you are not absolutely sure about something, state that you are unsure rather than providing speculative information."
         ))
         return rag_app.llm.invoke([system_msg, HumanMessage(content=message)])
 
@@ -488,7 +490,7 @@ async def _run_plain_llm(rag_app, message: str) -> str:
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
-    """Sistem sağlık kontrolü."""
+    """System health check."""
     rag_app = _app_state.get("rag_app")
     if rag_app is None:
         return HealthResponse(
@@ -517,7 +519,7 @@ async def chat_sync(
     req: ChatRequest,
     ctx: AppRequestContext = Depends(get_request_context),
 ):
-    """Senkron chat endpoint'i. Tam cevabı bekleyip tek seferde döner."""
+    """Synchronous chat endpoint. Waits for full response and returns at once."""
     rag_app = _get_rag_app()
     session_id = ctx.session_id
 
@@ -559,23 +561,23 @@ async def chat_stream(
     ctx: AppRequestContext = Depends(get_request_context),
 ):
     """
-    SSE streaming chat endpoint'i.
-    Token'ları Server-Sent Events olarak canlı gönderir.
+    SSE streaming chat endpoint.
+    Sends tokens as Server-Sent Events in real-time.
 
-    use_rag=true  → Agentic RAG pipeline (search_documents, web_search, vb.)
-    use_rag=false → Normal chatbot modu (doğrudan LLM, tool çağrısı yok)
+    use_rag=true  → Agentic RAG pipeline (search_documents, web_search, etc.)
+    use_rag=false → Normal chatbot mode (direct LLM, no tool calls)
 
-    Event tipleri:
-      - ``token``: Tek bir metin parçası
-      - ``sources``: Kaynak bilgileri (JSON)
-      - ``done``: Akışın bittiğini belirtir
-      - ``error``: Hata oluştuğunda
+    Event types:
+      - ``token``: A single text fragment
+      - ``sources``: Source information (JSON)
+      - ``done``: Indicates end of stream
+      - ``error``: When an error occurs
     """
     rag_app = _get_rag_app()
     session_id = ctx.session_id
 
-    # Chat isteği, aynı zamanda uzun sürebilen bir agent görevi olarak da
-    # değerlendirilir; Task registry'de "running" olarak işaretleyelim.
+    # The chat request is also considered a potentially long-running agent task;
+    # mark it as "running" in the Task registry.
     upsert_task(
         task_id=session_id,
         status="running",
@@ -590,7 +592,7 @@ async def chat_stream(
             loop = asyncio.get_running_loop()
 
             if req.use_rag:
-                # ── RAG modu: Gerçek stream (LangGraph stream_mode="values") ──
+                # ── RAG mode: Real stream (LangGraph stream_mode="values") ──
                 configurable = {"session_id": session_id}
                 metadata: Dict[str, Any] = {
                     "session_id": session_id,
@@ -649,12 +651,12 @@ async def chat_stream(
                         sources = _extract_sources(state)
                         last_state = state
             else:
-                # ── Normal chatbot modu: Doğrudan LLM (stream) ──
+                # ── Normal chatbot mode: Direct LLM (stream) ──
                 content = await _run_plain_llm(rag_app, req.message)
                 last_state = {"messages": [content]} if hasattr(content, "type") else None
                 content_str = getattr(content, "content", str(content))
                 accumulated_text = content_str
-                # Karakter bazlı chunk (LLM stream yok)
+                # Character-based chunking (no LLM stream)
                 chunk_size = 20
                 for i in range(0, len(content_str), chunk_size):
                     yield f"event: token\ndata: {json.dumps({'text': content_str[i:i + chunk_size]}, ensure_ascii=False)}\n\n"
@@ -690,7 +692,7 @@ async def chat_stream(
                 real_token_count = len(accumulated_text.split()) if accumulated_text else 0
                 
             yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'latency_ms': round(elapsed_ms, 2), 'token_count': real_token_count})}\n\n"
-            # Task durumunu güncelle
+            # Update task status
             upsert_task(
                 task_id=session_id,
                 status="completed",
@@ -708,7 +710,7 @@ async def chat_stream(
                 )
 
         except Exception as exc:
-            logger.error(f"Chat stream hatası: {exc}")
+            logger.error(f"Chat stream error: {exc}")
             yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
 
     return StreamingResponse(
@@ -730,8 +732,8 @@ async def ingest_documents(
     ctx: AppRequestContext = Depends(get_request_context),
 ):
     """
-    Yeni dokümanları sisteme yükler (incremental).
-    Dosya hash'i kontrolü ile aynı dosyanın tekrar yüklenmesini önler.
+    Ingests new documents into the system (incremental).
+    Prevents re-ingesting the same file using file hash checks.
     """
     rag_app = _get_rag_app()
 
@@ -758,7 +760,7 @@ async def ingest_documents(
     except AttributeError:
         raise HTTPException(
             status_code=501,
-            detail="Incremental ingestion henüz implemente edilmedi"
+            detail="Incremental ingestion not yet implemented"
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -772,8 +774,8 @@ async def ingest_upload(
     ctx: AppRequestContext = Depends(get_request_context),
 ):
     """
-    Dosya yükleyerek doküman ekleme.
-    Yüklenen dosyalar data/ dizinine kaydedilir ve indexlenir.
+    Document upload for ingestion.
+    Uploaded files are saved to the data/ directory and indexed.
     """
     rag_app = _get_rag_app()
     data_dir = Path(rag_app.config.data_dir)
@@ -819,12 +821,12 @@ async def delete_documents(
     ctx: AppRequestContext = Depends(get_request_context),
 ):
     """
-    Yüklenmiş dokümanları sistemden siler.
+    Deletes ingested documents from the system.
 
-    - Qdrant vectorstore'daki ilgili chunk'ları kaldırır
-    - BM25 index'ini günceller
-    - Ingestion registry'den hash kaydını temizler
-    - Dosyalar data/ dizininden de silinir (varsa)
+    - Removes related chunks from the Qdrant vectorstore
+    - Updates the BM25 index
+    - Clears hash record from the ingestion registry
+    - Also deletes files from the data/ directory (if they exist)
     """
     rag_app = _get_rag_app()
     data_dir = Path(rag_app.config.data_dir)
@@ -837,14 +839,14 @@ async def delete_documents(
         else:
             resolved_paths.append(str(p_path))
 
-    # Önce dosyaları diskten silmeyi dene (isteğe bağlı; hata verse bile devam)
+    # Try to delete files from disk first (optional; continues even on error)
     for file_path in resolved_paths:
         try:
             fp = Path(file_path)
             if fp.exists():
                 fp.unlink()
         except Exception as exc:
-            logger.warning(f"Dosya silinemedi ({file_path}): {exc}")
+            logger.warning(f"Could not delete file ({file_path}): {exc}")
 
     def _do_delete():
         return rag_app.delete_paths(resolved_paths, department_id=ctx.department_id)
@@ -875,8 +877,8 @@ async def configure_llm(
     ctx: AppRequestContext = Depends(get_request_context),
 ):
     """
-    Runtime'da LLM provider'ını değiştirir.
-    Sistemi yeniden başlatmaya gerek kalmadan farklı bir model/provider kullanılabilir.
+    Changes the LLM provider at runtime.
+    Allows using a different model/provider without restarting the system.
     """
     rag_app = _get_rag_app()
 
@@ -890,11 +892,11 @@ async def configure_llm(
             base_url=req.base_url,
         )
 
-        # RagApp üzerindeki provider ve LLM'i güncelle
+        # Update provider and LLM on RagApp
         rag_app.llm_provider = new_provider
         rag_app.llm = new_provider.client
 
-        # Agent graph'ı yeni LLM ile yeniden oluştur
+        # Rebuild agent graph with new LLM
         from src.agent import build_agent_graph
         rag_app.agent = build_agent_graph(new_provider.client, memory=rag_app.memory)
 
@@ -914,7 +916,7 @@ async def configure_llm(
     except ImportError:
         raise HTTPException(
             status_code=501,
-            detail="Multi-provider desteği için litellm kurulumu gerekli: pip install litellm"
+            detail="Multi-provider support requires litellm: pip install litellm"
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -924,7 +926,7 @@ async def configure_llm(
 async def get_llm_config(
     ctx: AppRequestContext = Depends(get_request_context),
 ):
-    """Mevcut LLM provider bilgisini döner."""
+    """Returns current LLM provider information."""
     rag_app = _get_rag_app()
     resp = {
         "provider": type(rag_app.llm_provider).__name__,
@@ -941,7 +943,6 @@ async def get_llm_config(
 
 
 # ── Frontend Static Files ────────────────────────────────────
-# Frontend Next.js olarak ayrı bir dev server'da çalışır (localhost:3000).
-# Production build için Next.js export sonrası burada serve edilebilir.
-# Şu an CORS middleware ile cross-origin isteklere izin verilmektedir.
-
+# Frontend runs as a separate Next.js dev server (localhost:3000).
+# For production build, Next.js export can be served here.
+# Currently, cross-origin requests are allowed via CORS middleware.
